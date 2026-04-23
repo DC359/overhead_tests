@@ -1,0 +1,23 @@
+{
+    "vm_size_gb": 3,
+    "interval": 30,
+    "baseline_duration": 60,
+    "stabilization_wait": 120,
+    "stable_duration": 120,
+    "num_runs": 1,
+    "clone_buffer": 5,
+    "base_vm_name": "fio_small_base",
+    "clone_prefix": "fio_small",
+    "workload": {
+        "type": "fio",
+        "config": {
+            "rw": "randread",
+            "bs": "4k",
+            "ioengine": "io_uring",
+            "iodepth": 128,
+            "numjobs": 8,
+            "size": "512M",
+            "direct": 1
+        }
+    }
+}

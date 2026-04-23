@@ -1,0 +1,18 @@
+{
+    "vm_size_gb": 5,
+    "interval": 30,
+    "baseline_duration": 60,
+    "stabilization_wait": 240,
+    "stable_duration": 120,
+    "num_runs": 1,
+    "clone_buffer": 5,
+    "base_vm_name": "iperf_server_base",
+    "clone_prefix": "iperf_server",
+    "workload": {
+        "type": "iperf",
+        "config": {
+            "threads": 2,
+            "port": 5201
+        }
+    }
+}
