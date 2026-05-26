@@ -19,7 +19,8 @@ def run():
     vm_size = config.get("vm_size_gb", 5)
     base_name = config.get("base_vm_name", "dirty_harry_base")
     clone_prefix = config.get("clone_prefix", "dirty_harry")
-    clone_buffer = config.get("clone_buffer", 5)
+    workload_type = config["workload"]["type"]
+    clone_buffer = 0 if workload_type == "iperf" else config.get("clone_buffer", 5)
 
     cvm = Cvm(cvm_ip)
 
@@ -70,7 +71,6 @@ def run():
     print("Calculated clone count: %d (including buffer of %d)" % (max_vms, clone_buffer))
 
     # --- IPERF_ADDITION START: resolve host UUID for affinity pinning ---
-    workload_type = config["workload"]["type"]
     host_uuid = None
     if workload_type == "iperf":
         host_obj = cvm.getHost(host_name)
