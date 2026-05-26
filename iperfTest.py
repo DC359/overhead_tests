@@ -16,12 +16,13 @@ VERSION = "0.1"
 
 from util.ObjFactory import *
 from util.cvm import *
-from libx.lib import run_remote_cmd
+from libx.lib import run_remote_cmd, shell_run
 import time
 import sys
 import getopt
 import json
 import re
+import datetime
 
 cvm_ip = ''
 config_file = ''
@@ -30,21 +31,30 @@ server_host_name = ''
 client_host_name = ''
 
 
+def wall_clock_now():
+    return datetime.datetime.now().strftime("%H:%M:%S")
+
+
 def get_vm_ips(cvm, prefix, expected_count):
     """Power on VMs matching prefix, wait for all to get IPs, return {index: ip}.
-    No hard timeout. Aborts if:
+    Tolerates losing up to 2 VMs (accepts expected-2 as success).
+    Enforces a minimum of 8 polls (~2 min) before allowing stale-exit.
+    Aborts if:
       - zero IPs after 20 polls (~5 min): networking/DHCP is broken
-      - no new IPs for 20 polls (~5 min): stalled, continue with what we have"""
+      - no new IPs for 10 consecutive polls AND min polls met: stalled"""
     pattern = "%s_*" % prefix
     print("Powering on %s ..." % pattern)
     cvm.vmOnAll(pattern)
 
-    print("Waiting for all %d VMs to get IPs..." % expected_count)
+    min_acceptable = max(expected_count - 2, 1)
+    print("Waiting for VMs to get IPs (target=%d, acceptable=%d)..." % (expected_count, min_acceptable))
+
     ip_map = {}
     zero_polls = 0
     stale_polls = 0
     max_zero_polls = 20
-    max_stale_polls = 20
+    max_stale_polls = 10
+    min_polls_before_stale_exit = 8
     last_progress_count = 0
     poll_num = 0
 
@@ -68,6 +78,10 @@ def get_vm_ips(cvm, prefix, expected_count):
         if got >= expected_count:
             break
 
+        if got >= min_acceptable and poll_num >= min_polls_before_stale_exit:
+            print("[OK] Got %d/%d IPs (>= acceptable %d). Proceeding." % (got, expected_count, min_acceptable))
+            break
+
         if got == 0:
             zero_polls += 1
             if zero_polls >= max_zero_polls:
@@ -82,7 +96,7 @@ def get_vm_ips(cvm, prefix, expected_count):
             stale_polls = 0
         else:
             stale_polls += 1
-            if stale_polls >= max_stale_polls:
+            if stale_polls >= max_stale_polls and poll_num >= min_polls_before_stale_exit:
                 print("[WARNING] Stuck at %d/%d IPs for %d polls (~%ds). Continuing with available VMs." % (
                     got, expected_count, max_stale_polls, max_stale_polls * 15))
                 break
@@ -253,18 +267,23 @@ def count_prefix_vms(cvm, prefix):
     return count
 
 
+
 def run_experiment_1host(cvm, host, config, run_number):
     """Single-host experiment: N VMs on one host, split into servers and clients."""
-    interval = config.get("interval", 30)
-    baseline_ticks = config.get("baseline_duration", 60) // interval
-    stabilization_ticks = config.get("stabilization_wait", 240) // interval
-    stable_ticks = config.get("stable_duration", 120) // interval
+    interval = config.get("interval", 5)
+    baseline_duration = config.get("baseline_duration", 30)
+    stable_ticks = config.get("stable_ticks", 24)
+    max_warmup_duration = config.get("max_warmup_duration", 300)
     clone_prefix = config.get("clone_prefix", "iperf_vm")
     pattern = "%s_*" % clone_prefix
     threads = config.get("workload", {}).get("config", {}).get("threads", 2)
     port = config.get("workload", {}).get("config", {}).get("port", 5201)
 
+    post_traffic_duration = max_warmup_duration + (stable_ticks * interval)
+
     print("\n========== RUN %d (single-host) ==========\n" % run_number)
+    print("Config: interval=%ds, baseline=%ds, max_warmup=%ds, stable_ticks=%d" % (
+        interval, baseline_duration, max_warmup_duration, stable_ticks))
 
     print("Ensuring all test VMs are powered off...")
     cvm.vmOffAll(pattern)
@@ -281,33 +300,51 @@ def run_experiment_1host(cvm, host, config, run_number):
     print("Total VMs: %d, Pairs: %d (servers: 1-%d, clients: %d-%d)" % (
         total_vms, num_pairs, num_pairs, num_pairs + 1, total_vms))
 
+    base_on_count = cvm.countPoweredOnVms()
+    expected_on = base_on_count + total_vms
+
     collector = ObjFactory.getStatsCollectorObj("schedstat")
     collector.setup(host, interval)
 
+    phase_timeline = []
+    events = []
+
     # BASELINE
-    print("--- BASELINE (all VMs off) ---")
-    for _ in range(baseline_ticks):
-        time.sleep(interval)
-        collector.collect_tick(phase="baseline")
+    wc = wall_clock_now()
+    events.append((wc, "collection_started"))
+    phase_timeline.append((wc, "baseline", 0))
+    print("[%s] --- BASELINE (all VMs off, %ds) ---" % (wc, baseline_duration))
+    time.sleep(baseline_duration)
 
     # POWER ON ALL VMs and get IPs
-    print("--- POWER ON & IP DISCOVERY ---")
+    wc = wall_clock_now()
+    events.append((wc, "vms_on_cmd_sent"))
+    phase_timeline.append((wc, "power_on", 0))
+    print("[%s] --- POWER ON & IP DISCOVERY ---" % wc)
     ip_map = get_vm_ips(cvm, clone_prefix, total_vms)
+    wc = wall_clock_now()
+    events.append((wc, "all_vms_on"))
     print("Got %d IPs." % len(ip_map))
 
     if not validate_post_ip_discovery(ip_map, clone_prefix, total_vms):
         print("[FATAL] IP discovery checks failed. Powering off and aborting.")
+        collector.stop()
         cvm.vmOffAll(pattern)
         sys.exit(1)
 
-    # Split: lower indices = servers, higher indices = clients
-    sorted_indices = sorted(ip_map.keys())[:total_vms]
+    actual_vms = len(ip_map)
+    if actual_vms % 2 != 0:
+        actual_vms -= 1
+    num_pairs = actual_vms // 2
+
+    sorted_indices = sorted(ip_map.keys())[:actual_vms]
     server_indices = sorted_indices[:num_pairs]
     client_indices = sorted_indices[num_pairs:]
 
     server_ip_map = {i: ip_map[i] for i in server_indices}
     client_ip_map = {i: ip_map[i] for i in client_indices}
 
+    print("Actual VMs with IPs: %d, Pairs: %d" % (actual_vms, num_pairs))
     print("Server VMs (indices %s): %d VMs" % (
         "%d-%d" % (server_indices[0], server_indices[-1]), len(server_ip_map)))
     print("Client VMs (indices %s): %d VMs" % (
@@ -315,65 +352,74 @@ def run_experiment_1host(cvm, host, config, run_number):
 
     # START IPERF SERVERS
     print("--- STARTING IPERF SERVERS ---")
-    srv_failed = start_iperf_servers(server_ip_map, port)
+    start_iperf_servers(server_ip_map, port)
     time.sleep(10)
 
-    # CHECK: verify servers are listening
     print("--- CHECKING IPERF SERVERS ---")
     validate_bulk_iperf(server_ip_map, "server")
 
     # START IPERF CLIENTS
+    wc = wall_clock_now()
+    events.append((wc, "iperf_traffic_started"))
     print("--- STARTING IPERF CLIENTS ---")
-    cli_failed = start_iperf_clients(client_ip_map, server_ip_map, threads, port)
+    start_iperf_clients(client_ip_map, server_ip_map, threads, port)
     time.sleep(10)
 
-    # CHECK: verify clients are connected
     print("--- CHECKING IPERF CLIENTS ---")
     validate_bulk_iperf(client_ip_map, "client")
 
-    # CHECK: validate one full pair
     first_server_ip = server_ip_map[server_indices[0]]
     first_client_ip = client_ip_map[client_indices[0]]
     if not validate_iperf_pair(first_server_ip, first_client_ip, port):
         print("[WARNING] First iperf pair validation failed. Traffic may not be flowing.")
 
-    # WARMUP
-    print("--- WARMUP (iperf traffic ramping up) ---")
-    for i in range(stabilization_ticks):
-        vm_count = cvm.countPoweredOnVms()
-        print("[warmup tick %d] VMs on: %d" % (i + 1, vm_count))
-        time.sleep(interval)
-        collector.collect_tick(phase="warmup")
+    # COLLECTING (warmup + stable determined retroactively)
+    vm_count = cvm.countPoweredOnVms()
+    wc = wall_clock_now()
+    phase_timeline.append((wc, "collecting", vm_count))
+    print("[%s] --- COLLECTING (VMs on: %d, waiting %ds for warmup+stable) ---" % (
+        wc, vm_count, post_traffic_duration))
+    time.sleep(post_traffic_duration)
 
     vm_count = cvm.countPoweredOnVms()
-    print("VMs powered on (final): %d" % vm_count)
+    print("[%s] VMs powered on (final): %d" % (wall_clock_now(), vm_count))
 
-    # CHECK: mid-experiment liveness — iperf still running?
-    print("--- MID-EXPERIMENT LIVENESS CHECK ---")
-    validate_iperf_pair(first_server_ip, first_client_ip, port)
-    validate_bulk_iperf(server_ip_map, "server")
-    validate_bulk_iperf(client_ip_map, "client")
+    wc = wall_clock_now()
+    events.append((wc, "collection_ended"))
+    collector.stop()
 
-    # STABLE MEASUREMENT
-    print("--- STABLE MEASUREMENT ---")
-    for i in range(stable_ticks):
-        vm_count = cvm.countPoweredOnVms()
-        print("[stable tick %d] VMs on: %d" % (i + 1, vm_count))
-        time.sleep(interval)
-        collector.collect_tick(phase="stable")
-
-    print("Powering off all test VMs...")
+    print("[%s] Powering off all test VMs..." % wall_clock_now())
+    wc = wall_clock_now()
+    events.append((wc, "vms_off_cmd_sent"))
     cvm.vmOffAll(pattern)
 
-    return collector.exportStats(), vm_count, collector._num_cpus
+    host_ip = host.getHostIp()
+    scp_opts = "-o StrictHostKeyChecking=no"
+    if host._control_active:
+        scp_opts += " -o ControlPath=%s" % host._control_socket
+    from statsCollector.schedstatCollector import LOCAL_FETCH_DIR
+    shell_run("scp %s root@%s:/tmp/cgtop_log.txt %s/cgtop_log_fetched.txt" % (scp_opts, host_ip, LOCAL_FETCH_DIR))
+    shell_run("scp %s root@%s:/tmp/mpstat_log.txt %s/mpstat_log_fetched.txt" % (scp_opts, host_ip, LOCAL_FETCH_DIR))
+    shell_run("scp %s root@%s:/tmp/sar_log.txt %s/sar_log_fetched.txt" % (scp_opts, host_ip, LOCAL_FETCH_DIR))
+    print("[%s] Fetched cgtop, mpstat, sar -> %s/*_fetched.txt" % (wall_clock_now(), LOCAL_FETCH_DIR))
+
+    print("\n[%s] Fetching results from host and detecting phases..." % wall_clock_now())
+    warmup_cfg = {
+        "threshold_pct": config.get("warmup_threshold_pct", 5),
+        "consecutive": config.get("warmup_consecutive", 3),
+        "stable_ticks": stable_ticks,
+    }
+    collector.fetch_and_process(phase_timeline, warmup_cfg=warmup_cfg)
+
+    return collector.exportStats(), vm_count, collector._num_cpus, expected_on, events
 
 
 def run_experiment_2host(cvm, server_host, client_host, config, run_number):
     """Two-host experiment: all servers on host A, all clients on host B."""
-    interval = config.get("interval", 30)
-    baseline_ticks = config.get("baseline_duration", 60) // interval
-    stabilization_ticks = config.get("stabilization_wait", 240) // interval
-    stable_ticks = config.get("stable_duration", 120) // interval
+    interval = config.get("interval", 5)
+    baseline_duration = config.get("baseline_duration", 30)
+    stable_ticks = config.get("stable_ticks", 24)
+    max_warmup_duration = config.get("max_warmup_duration", 300)
     server_prefix = config.get("server_clone_prefix", "iperf_server")
     client_prefix = config.get("client_clone_prefix", "iperf_client")
     server_pattern = "%s_*" % server_prefix
@@ -381,7 +427,11 @@ def run_experiment_2host(cvm, server_host, client_host, config, run_number):
     threads = config.get("workload", {}).get("config", {}).get("threads", 2)
     port = config.get("workload", {}).get("config", {}).get("port", 5201)
 
+    post_traffic_duration = max_warmup_duration + (stable_ticks * interval)
+
     print("\n========== RUN %d (two-host) ==========\n" % run_number)
+    print("Config: interval=%ds, baseline=%ds, max_warmup=%ds, stable_ticks=%d" % (
+        interval, baseline_duration, max_warmup_duration, stable_ticks))
 
     print("Ensuring all test VMs are powered off...")
     cvm.vmOffAll(server_pattern)
@@ -397,26 +447,30 @@ def run_experiment_2host(cvm, server_host, client_host, config, run_number):
     num_pairs = min(num_servers, num_clients)
     print("Server VMs: %d, Client VMs: %d, Pairs: %d" % (num_servers, num_clients, num_pairs))
 
-    # Setup collectors on both hosts
     server_collector = ObjFactory.getStatsCollectorObj("schedstat")
-    server_collector.setup(server_host, interval, label="%s server" % server_host_name)  # IPERF_ADDITION: host label
+    server_collector.setup(server_host, interval, label="%s server" % server_host_name)
     client_collector = ObjFactory.getStatsCollectorObj("schedstat")
-    client_collector.setup(client_host, interval, label="%s client" % client_host_name)  # IPERF_ADDITION: host label
+    client_collector.setup(client_host, interval, label="%s client" % client_host_name)
+
+    phase_timeline = []
 
     # BASELINE
-    print("--- BASELINE (all VMs off) ---")
-    for _ in range(baseline_ticks):
-        time.sleep(interval)
-        server_collector.collect_tick(phase="baseline")
-        client_collector.collect_tick(phase="baseline")
+    wc = wall_clock_now()
+    phase_timeline.append((wc, "baseline", 0))
+    print("[%s] --- BASELINE (all VMs off, %ds) ---" % (wc, baseline_duration))
+    time.sleep(baseline_duration)
 
     # POWER ON SERVERS
-    print("--- POWER ON SERVERS ---")
+    wc = wall_clock_now()
+    phase_timeline.append((wc, "power_on", 0))
+    print("[%s] --- POWER ON SERVERS ---" % wc)
     server_ip_map = get_vm_ips(cvm, server_prefix, num_pairs)
     print("Got %d server IPs." % len(server_ip_map))
 
     if not validate_post_ip_discovery(server_ip_map, server_prefix, num_pairs):
         print("[FATAL] Server IP discovery checks failed. Aborting.")
+        server_collector.stop()
+        client_collector.stop()
         cvm.vmOffAll(server_pattern)
         sys.exit(1)
 
@@ -435,9 +489,15 @@ def run_experiment_2host(cvm, server_host, client_host, config, run_number):
 
     if not validate_post_ip_discovery(client_ip_map, client_prefix, num_pairs):
         print("[FATAL] Client IP discovery checks failed. Aborting.")
+        server_collector.stop()
+        client_collector.stop()
         cvm.vmOffAll(server_pattern)
         cvm.vmOffAll(client_pattern)
         sys.exit(1)
+
+    # Recompute pairs based on actual IPs obtained
+    num_pairs = min(len(server_ip_map), len(client_ip_map))
+    print("Actual pairs (based on IPs): %d" % num_pairs)
 
     # START IPERF CLIENTS
     print("--- STARTING IPERF CLIENTS ---")
@@ -447,44 +507,39 @@ def run_experiment_2host(cvm, server_host, client_host, config, run_number):
     print("--- CHECKING IPERF CLIENTS ---")
     validate_bulk_iperf(client_ip_map, "client")
 
-    # CHECK: validate one full pair
     server_indices = sorted(server_ip_map.keys())
     client_indices = sorted(client_ip_map.keys())
     if server_indices and client_indices:
         if not validate_iperf_pair(server_ip_map[server_indices[0]], client_ip_map[client_indices[0]], port):
             print("[WARNING] First iperf pair validation failed. Traffic may not be flowing.")
 
-    # WARMUP
-    print("--- WARMUP (iperf traffic ramping up) ---")
-    for i in range(stabilization_ticks):
-        vm_count = cvm.countPoweredOnVms()
-        print("[warmup tick %d] VMs on: %d" % (i + 1, vm_count))
-        time.sleep(interval)
-        server_collector.collect_tick(phase="warmup")
-        client_collector.collect_tick(phase="warmup")
+    # COLLECTING (warmup + stable determined retroactively)
+    vm_count = cvm.countPoweredOnVms()
+    wc = wall_clock_now()
+    phase_timeline.append((wc, "collecting", vm_count))
+    print("[%s] --- COLLECTING (VMs on: %d, waiting %ds for warmup+stable) ---" % (
+        wc, vm_count, post_traffic_duration))
+    time.sleep(post_traffic_duration)
 
     vm_count = cvm.countPoweredOnVms()
-    print("VMs powered on (final): %d" % vm_count)
+    print("[%s] VMs powered on (final): %d" % (wall_clock_now(), vm_count))
 
-    # CHECK: mid-experiment liveness
-    print("--- MID-EXPERIMENT LIVENESS CHECK ---")
-    if server_indices and client_indices:
-        validate_iperf_pair(server_ip_map[server_indices[0]], client_ip_map[client_indices[0]], port)
-    validate_bulk_iperf(server_ip_map, "server")
-    validate_bulk_iperf(client_ip_map, "client")
+    server_collector.stop()
+    client_collector.stop()
 
-    # STABLE MEASUREMENT
-    print("--- STABLE MEASUREMENT ---")
-    for i in range(stable_ticks):
-        vm_count = cvm.countPoweredOnVms()
-        print("[stable tick %d] VMs on: %d" % (i + 1, vm_count))
-        time.sleep(interval)
-        server_collector.collect_tick(phase="stable")
-        client_collector.collect_tick(phase="stable")
-
-    print("Powering off all test VMs...")
+    print("[%s] Powering off all test VMs..." % wall_clock_now())
     cvm.vmOffAll(server_pattern)
     cvm.vmOffAll(client_pattern)
+
+    warmup_cfg = {
+        "threshold_pct": config.get("warmup_threshold_pct", 5),
+        "consecutive": config.get("warmup_consecutive", 3),
+        "stable_ticks": stable_ticks,
+    }
+    print("\n[%s] Fetching results from server host and detecting phases..." % wall_clock_now())
+    server_collector.fetch_and_process(phase_timeline, warmup_cfg=warmup_cfg)
+    print("\n[%s] Fetching results from client host and detecting phases..." % wall_clock_now())
+    client_collector.fetch_and_process(phase_timeline, warmup_cfg=warmup_cfg)
 
     return (
         server_collector.exportStats(),
@@ -541,15 +596,17 @@ def run():
         print("Mode: SINGLE-HOST (%s)" % host_name)
 
         for run_num in range(1, num_runs + 1):
-            stats, vm_count, num_cpus = run_experiment_1host(cvm, host, config, run_num)
+            stats, vm_count, num_cpus, exp_on, run_events = run_experiment_1host(cvm, host, config, run_num)
 
             title = {
                 "vm_count": vm_count,
+                "expected_on": exp_on,
                 "host": host_name,
                 "run": run_num,
                 "num_runs": num_runs,
                 "num_cpus": num_cpus,
                 "config": config,
+                "events": run_events,
             }
             dump_results(title, stats, "run %d" % run_num)
 

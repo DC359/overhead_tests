@@ -1,0 +1,31 @@
+---
+description: Tracks the "-modified" experiment (new TIDs use current-0 instead of skip). Delete all by saying "delete modified thing we tried".
+alwaysApply: true
+---
+
+# "-modified" Experiment Locations
+
+When asked to "delete modified thing we tried", revert ALL of these:
+
+## schedstatCollector.py
+
+1. **`_build_metrics()` helper** (lines ~219-250): Was extracted from `compute_metrics`. Inline it back into `compute_metrics` as a single function returning `(metrics, new_prev)`.
+2. **`compute_metrics()`**: Remove `X_mod`, `Y_mod`, `new_tids_count` accumulators and the `else` branch that adds `run`/`wait` for new TIDs. Remove `metrics_mod` construction. Return `(metrics, new_prev)` instead of 3-tuple. Remove `new_tids_count` from metrics dict.
+3. **`fetch_and_process` PASS 1 slices loop**: Remove `metrics_mod` unpacking, remove `metrics_mod["pct_chg_*"] = None` lines, remove `tick_result["slices"][name + "-modified"] = metrics_mod`.
+4. **`fetch_and_process` PASS 1 services loop**: Remove `metrics_mod` unpacking, remove `tick_result["per_service"][svc_name + "-modified"] = metrics_mod`.
+5. **Tick output section**: Remove the `mod_name = name + "-modified"` block that prints modified lines.
+
+## terminalDump.py
+
+1. Remove `SLICE_NAMES_ALL` list. Change loop back to use `SLICE_NAMES`.
+2. Remove `NewTIDs` column from header and row formatting.
+3. Revert column widths: Slice back to `%-18s`, separator back to `120`.
+4. Remove `NewTIDs` from per-service section, revert service name width to `%-35s`.
+
+## csvDump.py
+
+1. Remove `new_tids_count` from `ALL_SLICE_FIELDS`.
+2. Remove `new_tids_count` column from slices CSV header and row.
+3. Remove `new_tids_count` column from services CSV header and row.
+
+After deletion, also delete this rule file itself.
