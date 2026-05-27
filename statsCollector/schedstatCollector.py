@@ -33,61 +33,12 @@ REMOTE_BPF_STDERR = "/tmp/bpf_stderr.txt"
 
 BPF_SCRIPT = r"""
 tracepoint:sched:sched_process_exit {
-    $kn  = curtask->cgroups->dfl_cgrp->kn;
-    $p1  = $kn->__parent;
-    $n1  = str($p1->name);
-
-    $depth = 0;
-    $svc   = $kn;
-
-    if ($n1 == "system.slice") {
-        $depth = 1;
-        $svc   = $kn;
-    } else {
-        $p2 = $p1->__parent;
-        $n2 = str($p2->name);
-        if ($n2 == "system.slice") {
-            $depth = 2;
-            $svc   = $p1;
-        } else {
-            $p3 = $p2->__parent;
-            $n3 = str($p3->name);
-            if ($n3 == "system.slice") {
-                $depth = 3;
-                $svc   = $p2;
-            } else {
-                $p4 = $p3->__parent;
-                $n4 = str($p4->name);
-                if ($n4 == "system.slice") {
-                    $depth = 4;
-                    $svc   = $p3;
-                } else {
-                    $p5 = $p4->__parent;
-                    $n5 = str($p5->name);
-                    if ($n5 == "system.slice") {
-                        $depth = 5;
-                        $svc   = $p4;
-                    }
-                }
-            }
-        }
-    }
-
-    if ($depth > 0) {
-        printf("%llu %d %d %s %s %d %llu %llu\n",
-            nsecs, pid, curtask->tgid, comm,
-            str($svc->name),
-            $depth,
-            curtask->se.sum_exec_runtime,
-            curtask->sched_info.run_delay);
-    } else {
-        @non_sys_exits++;
-    }
-}
-
-END {
-    printf("NON_SYS_SLICE_EXITS %lld\n", @non_sys_exits);
-    clear(@non_sys_exits);
+    printf("%llu %d %d %s %s %s %llu %llu\n",
+        nsecs, pid, curtask->tgid, comm,
+        str(curtask->cgroups->dfl_cgrp->kn->name),
+        str(curtask->cgroups->dfl_cgrp->kn->__parent->name),
+        curtask->se.sum_exec_runtime,
+        curtask->sched_info.run_delay);
 }
 """
 
@@ -195,84 +146,76 @@ def parse_results_file(content):
 
 def parse_bpf_log(path):
     """Parse bpf_ephemeral.txt produced by bpftrace.
-    Event lines (8 fields): <mono_ns> <pid> <tgid> <comm> <service> <depth> <run_ns> <wait_ns>
-    Compat (7 fields):      <mono_ns> <pid> <tgid> <comm> <service> <run_ns> <wait_ns>
-    UNACCOUNTED lines (7):  UNACCOUNTED <mono_ns> <pid> <tgid> <comm> <cgroup> <run_ns> <wait_ns>
-    Summary line:           SLICE_EXIT_SUMMARY ahv_cvm=N ahv_uvms=N unaccounted=N
-    Returns (entries_sorted, slice_exit_summary_dict, unaccounted_entries).
+    Event lines (8 fields): <mono_ns> <pid> <tgid> <comm> <cgroup_name> <parent_name> <run_ns> <wait_ns>
+    parent_name is the immediate parent cgroup (e.g. 'system.slice', 'ahv-cvm.slice').
+    cgroup_name is the leaf cgroup (e.g. 'vhostmd.service').
+    Kernel threads may have empty parent_name.
+    Returns (entries_sorted, per_slice_summary).
+    per_slice_summary: {slice_name: {"count": N, "run_ns": total, "wait_ns": total,
+                                     "services": {svc: count}}}
     """
     entries = []
-    unaccounted = []
-    exit_summary = {"ahv_cvm": 0, "ahv_uvms": 0, "unaccounted": 0}
+    per_slice_summary = {}
     if not os.path.exists(path):
-        return entries, exit_summary, unaccounted
+        return entries, per_slice_summary
     with open(path, "r") as f:
         for line in f:
             stripped = line.strip()
-            if stripped.startswith("SLICE_EXIT_SUMMARY"):
-                for token in stripped.split():
-                    if "=" in token:
-                        k, v = token.split("=", 1)
-                        try:
-                            exit_summary[k] = int(v)
-                        except ValueError:
-                            pass
-                continue
-            if stripped.startswith("NON_SYS_SLICE_EXITS"):
-                parts = stripped.split()
-                if len(parts) >= 2:
-                    try:
-                        exit_summary["unaccounted"] = int(parts[1])
-                    except ValueError:
-                        pass
-                continue
-            if stripped.startswith("UNACCOUNTED"):
-                parts = stripped.split()
-                if len(parts) >= 8:
-                    try:
-                        unaccounted.append({
-                            "mono_ns": int(parts[1]),
-                            "pid": int(parts[2]),
-                            "tgid": int(parts[3]),
-                            "comm": parts[4],
-                            "cgroup": parts[5],
-                            "run_ns": int(parts[6]),
-                            "wait_ns": int(parts[7]),
-                        })
-                    except (ValueError, IndexError):
-                        pass
+            if not stripped or stripped.startswith("Attaching"):
                 continue
             parts = stripped.split()
-            if len(parts) >= 8:
-                try:
-                    entries.append({
-                        "mono_ns": int(parts[0]),
-                        "pid": int(parts[1]),
-                        "tgid": int(parts[2]),
-                        "comm": parts[3],
-                        "service": parts[4],
-                        "depth": int(parts[5]),
-                        "run_ns": int(parts[6]),
-                        "wait_ns": int(parts[7]),
-                    })
-                except (ValueError, IndexError):
-                    continue
-            elif len(parts) >= 7:
-                try:
-                    entries.append({
-                        "mono_ns": int(parts[0]),
-                        "pid": int(parts[1]),
-                        "tgid": int(parts[2]),
-                        "comm": parts[3],
-                        "service": parts[4],
-                        "depth": 1,
-                        "run_ns": int(parts[5]),
-                        "wait_ns": int(parts[6]),
-                    })
-                except (ValueError, IndexError):
-                    continue
+            if len(parts) < 7:
+                continue
+            try:
+                if len(parts) >= 8:
+                    mono_ns = int(parts[0])
+                    pid = int(parts[1])
+                    tgid = int(parts[2])
+                    comm = parts[3]
+                    cgroup_name = parts[4]
+                    parent_name = parts[5]
+                    run_ns = int(parts[6])
+                    wait_ns = int(parts[7])
+                else:
+                    mono_ns = int(parts[0])
+                    pid = int(parts[1])
+                    tgid = int(parts[2])
+                    comm = parts[3]
+                    cgroup_name = parts[4]
+                    parent_name = ""
+                    run_ns = int(parts[5])
+                    wait_ns = int(parts[6])
+            except (ValueError, IndexError):
+                continue
+
+            slice_name = parent_name if parent_name else cgroup_name
+            service = cgroup_name if parent_name else ""
+
+            entries.append({
+                "mono_ns": mono_ns,
+                "pid": pid,
+                "tgid": tgid,
+                "comm": comm,
+                "cgroup_path": "%s/%s" % (parent_name, cgroup_name) if parent_name else cgroup_name,
+                "slice": slice_name,
+                "service": service,
+                "run_ns": run_ns,
+                "wait_ns": wait_ns,
+            })
+
+            if slice_name not in per_slice_summary:
+                per_slice_summary[slice_name] = {
+                    "count": 0, "run_ns": 0, "wait_ns": 0, "services": {}
+                }
+            per_slice_summary[slice_name]["count"] += 1
+            per_slice_summary[slice_name]["run_ns"] += run_ns
+            per_slice_summary[slice_name]["wait_ns"] += wait_ns
+            if service:
+                svcs = per_slice_summary[slice_name]["services"]
+                svcs[service] = svcs.get(service, 0) + 1
+
     entries.sort(key=lambda e: e["mono_ns"])
-    return entries, exit_summary, unaccounted
+    return entries, per_slice_summary
 
 
 def _build_metrics(X, Y, N, num_cpus, interval, new_tids_count, counted_tids):
@@ -551,18 +494,12 @@ class schedstatCollector(StatsCollectorTmpl):
             print("WARNING: could not fetch bpf_ephemeral.txt from host")
             with open(local_bpf, "w") as f:
                 pass
-        bpf_entries, bpf_exit_summary, bpf_unaccounted = parse_bpf_log(local_bpf)
-        bpf_depth_counts = {}
-        for e in bpf_entries:
-            d = e.get("depth", 1)
-            bpf_depth_counts[d] = bpf_depth_counts.get(d, 0) + 1
-        depth_detail = ", ".join("depth_%d=%d" % (d, c) for d, c in sorted(bpf_depth_counts.items()))
-        nested_total = sum(c for d, c in bpf_depth_counts.items() if d > 1)
-        non_sys_total = (bpf_exit_summary.get("ahv_cvm", 0)
-                         + bpf_exit_summary.get("ahv_uvms", 0)
-                         + bpf_exit_summary.get("unaccounted", 0))
-        print("BPF ephemeral log: %d system.slice exit events (%s) — %d nested (depth>1), %d non-system.slice"
-              % (len(bpf_entries), depth_detail or "none", nested_total, non_sys_total))
+        bpf_entries, bpf_slice_summary = parse_bpf_log(local_bpf)
+        slice_detail = ", ".join("%s=%d" % (s, d["count"])
+                                 for s, d in sorted(bpf_slice_summary.items(), key=lambda x: -x[1]["count"]))
+        sys_slice_count = bpf_slice_summary.get("system.slice", {}).get("count", 0)
+        print("BPF ephemeral log: %d total exit events (%s) — %d in system.slice"
+              % (len(bpf_entries), slice_detail or "none", sys_slice_count))
 
         local_bpf_stderr = os.path.join(LOCAL_FETCH_DIR, "bpf_stderr_fetched.txt")
         try:
@@ -786,8 +723,7 @@ class schedstatCollector(StatsCollectorTmpl):
 
             eph_by_svc = {}
             eph_dedup_hwm = 0
-            eph_nested_count = 0
-            tick_depth_counts = {}
+            tick_slice_exits = {}
             if mono_start == 0 and mono_end == 0:
                 pass
             else:
@@ -797,13 +733,20 @@ class schedstatCollector(StatsCollectorTmpl):
                     if mono_end > 0 and e["mono_ns"] >= mono_end:
                         break
 
+                    sl = e["slice"]
+                    if sl not in tick_slice_exits:
+                        tick_slice_exits[sl] = {"count": 0, "run_ns": 0, "wait_ns": 0, "services": {}}
+                    tick_slice_exits[sl]["count"] += 1
+                    tick_slice_exits[sl]["run_ns"] += e["run_ns"]
+                    tick_slice_exits[sl]["wait_ns"] += e["wait_ns"]
+                    if e["service"]:
+                        svcs = tick_slice_exits[sl]["services"]
+                        svcs[e["service"]] = svcs.get(e["service"], 0) + 1
+
+                    if sl != "system.slice":
+                        continue
+
                     tid = e["pid"]
-                    d = e.get("depth", 1)
-                    tick_depth_counts[d] = tick_depth_counts.get(d, 0) + 1
-
-                    if d > 1:
-                        eph_nested_count += 1
-
                     if tid in hwm_svc_tids:
                         hwm_run, hwm_wait = hwm_svc_tids[tid]
                         run_contribution = max(0, e["run_ns"] - hwm_run)
@@ -849,8 +792,8 @@ class schedstatCollector(StatsCollectorTmpl):
                     tick_result["slices"][svc_slice].get("x_cores", 0)
                     + (eph_total_run / interval_ns if interval_ns > 0 else 0), 4)
             tick_result["bpf_dedup"] = {"hwm_dedup": eph_dedup_hwm,
-                                        "counted": eph_total_count, "nested": eph_nested_count,
-                                        "depth_counts": tick_depth_counts}
+                                        "counted": eph_total_count}
+            tick_result["bpf_slice_exits"] = tick_slice_exits
 
             # --- Sanity checks: compare total_X against cpu.stat ---
             total_X_ns = slice_X.get("ahv.services", 0) + eph_total_run
@@ -950,6 +893,7 @@ class schedstatCollector(StatsCollectorTmpl):
             exit_details = []
             by_service = {}
             by_comm = {}
+            by_slice = {}
             for e in bpf_entries:
                 if mono_s > 0 and e["mono_ns"] < mono_s:
                     continue
@@ -957,12 +901,15 @@ class schedstatCollector(StatsCollectorTmpl):
                     break
                 exit_details.append({
                     "pid": e["pid"], "comm": e["comm"],
-                    "cgroup": e["service"], "depth": e.get("depth", 1),
+                    "cgroup": e.get("cgroup_path", ""),
+                    "slice": e["slice"], "service": e["service"],
                     "churn_type": "exit",
                     "run_ns": e["run_ns"], "wait_ns": e["wait_ns"],
                 })
-                by_service[e["service"]] = by_service.get(e["service"], 0) + 1
+                svc_key = e["service"] if e["service"] else e["slice"]
+                by_service[svc_key] = by_service.get(svc_key, 0) + 1
                 by_comm[e["comm"]] = by_comm.get(e["comm"], 0) + 1
+                by_slice[e["slice"]] = by_slice.get(e["slice"], 0) + 1
 
             tr["churn"] = {
                 "born_died": len(exit_details),
@@ -971,6 +918,7 @@ class schedstatCollector(StatsCollectorTmpl):
                 "total": len(exit_details),
                 "by_service": by_service,
                 "by_comm": by_comm,
+                "by_slice": by_slice,
                 "bd_by_service": by_service,
                 "bd_by_comm": by_comm,
                 "details": exit_details,
@@ -980,9 +928,7 @@ class schedstatCollector(StatsCollectorTmpl):
         # --- Output all ticks ---
         self._bpf_summary = {
             "total_events": len(bpf_entries),
-            "depth_counts": dict(bpf_depth_counts),
-            "non_sys_exits": non_sys_total,
-            "exit_summary": bpf_exit_summary,
+            "per_slice": bpf_slice_summary,
         }
         self._results = all_tick_results
         for i, tr in enumerate(all_tick_results):
@@ -1013,11 +959,14 @@ class schedstatCollector(StatsCollectorTmpl):
                 print("  [%s]" % " | ".join(extra))
             churn = tr.get("churn", {})
             if churn.get("total", 0) > 0:
+                slice_parts = sorted(churn.get("by_slice", {}).items(), key=lambda x: -x[1])
+                slice_str = ", ".join("%s(%d)" % (s, c) for s, c in slice_parts)
                 svc_parts = sorted(churn["by_service"].items(), key=lambda x: -x[1])
                 svc_str = ", ".join("%s(%d)" % (s, c) for s, c in svc_parts[:5])
                 comm_parts = sorted(churn["by_comm"].items(), key=lambda x: -x[1])
                 comm_str = ", ".join("%s(x%d)" % (n, c) for n, c in comm_parts[:5])
-                print("  [BPF EXITS] %d threads exited | services: %s" % (churn["total"], svc_str))
+                print("  [BPF EXITS] %d threads exited | slices: %s" % (churn["total"], slice_str))
+                print("              services: %s" % svc_str)
                 print("              names: %s" % comm_str)
 
             bpf_dd = tr.get("bpf_dedup", {})
@@ -1032,10 +981,9 @@ class schedstatCollector(StatsCollectorTmpl):
             svc_m = tr["slices"].get("ahv.services", {})
             total_xc = svc_m.get("total_x_cores")
             if total_xc is not None:
-                print("  [ahv.services total_x_cores=%.4f (schedstat=%.4f + bpf_eph=%.4f) dedup: hwm=%d counted=%d nested=%d]" % (
+                print("  [ahv.services total_x_cores=%.4f (schedstat=%.4f + bpf_eph=%.4f) dedup: hwm=%d counted=%d]" % (
                     total_xc, svc_m.get("x_cores", 0), svc_m.get("ephemeral_x_cores", 0),
-                    bpf_dd.get("hwm_dedup", 0), bpf_dd.get("counted", 0),
-                    bpf_dd.get("nested", 0)))
+                    bpf_dd.get("hwm_dedup", 0), bpf_dd.get("counted", 0)))
             sanity_w = tr.get("sanity_warning")
             if sanity_w:
                 print("  [SANITY WARNING] %s" % sanity_w)

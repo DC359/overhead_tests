@@ -155,7 +155,7 @@ class csvDump(StatsDumpTmpl):
         with open(bpf_exits_file, "w") as f:
             w = csv.writer(f)
             w.writerow(["Tick", "Wall_Clock", "Phase", "PID", "Comm",
-                         "Service", "Run_ns", "Wait_ns"])
+                         "Slice", "Service", "Cgroup_Path", "Run_ns", "Wait_ns"])
             for tick in stats:
                 churn = tick.get("churn", {})
                 for info in churn.get("details", []):
@@ -165,6 +165,8 @@ class csvDump(StatsDumpTmpl):
                         tick.get("phase", ""),
                         info.get("pid", ""),
                         info.get("comm", ""),
+                        info.get("slice", ""),
+                        info.get("service", ""),
                         info.get("cgroup", ""),
                         info.get("run_ns", ""),
                         info.get("wait_ns", ""),
@@ -179,8 +181,7 @@ class csvDump(StatsDumpTmpl):
                 "Service",
                 "cpu.stat_ns", "schedstat_ns", "bpf_eph_ns", "total_ns",
                 "Diff_pct", "TotalDiff_pct",
-                "bpf_exits", "bpf_hwm_dedup", "bpf_nested",
-                "bpf_depth_1", "bpf_depth_2", "bpf_depth_3", "bpf_depth_4", "bpf_depth_5",
+                "bpf_exits", "bpf_hwm_dedup",
                 "sanity_warning",
             ])
             for tick in stats:
@@ -188,7 +189,6 @@ class csvDump(StatsDumpTmpl):
                 if not verify:
                     continue
                 bpf_dd = tick.get("bpf_dedup", {})
-                dc = bpf_dd.get("depth_counts", {})
                 for svc, v in sorted(verify.items()):
                     cpustat = v["cpustat_ns"]
                     sched = v["schedstat_ns"]
@@ -214,8 +214,6 @@ class csvDump(StatsDumpTmpl):
                         diff_pct, total_diff_pct,
                         eph_count,
                         bpf_dd.get("hwm_dedup", 0),
-                        bpf_dd.get("nested", 0),
-                        dc.get(1, 0), dc.get(2, 0), dc.get(3, 0), dc.get(4, 0), dc.get(5, 0),
                         tick.get("sanity_warning", ""),
                     ])
         print("Verification vs BPF CSV saved to %s" % merged_file)
@@ -226,9 +224,40 @@ class csvDump(StatsDumpTmpl):
             with open(summary_file, "w") as f:
                 w = csv.writer(f)
                 w.writerow(["metric", "value"])
-                w.writerow(["total_system_slice_exits", bpf_summary.get("total_events", 0)])
-                global_dc = bpf_summary.get("depth_counts", {})
-                for d in sorted(global_dc.keys()):
-                    w.writerow(["depth_%d" % d, global_dc[d]])
-                w.writerow(["non_system_slice_exits", bpf_summary.get("non_sys_exits", 0)])
+                w.writerow(["total_exit_events", bpf_summary.get("total_events", 0)])
+                per_slice = bpf_summary.get("per_slice", {})
+                for sl in sorted(per_slice.keys(), key=lambda s: -per_slice[s]["count"]):
+                    sd = per_slice[sl]
+                    w.writerow(["slice_%s_exits" % sl, sd["count"]])
+                    for svc, cnt in sorted(sd.get("services", {}).items(), key=lambda x: -x[1]):
+                        w.writerow(["  svc_%s/%s" % (sl, svc), cnt])
             print("BPF summary CSV saved to %s" % summary_file)
+
+        bpf_slice_exits_file = os.path.join(outdir, "bpf_slice_exits%s_run%d.csv" % (host_suffix, run_num))
+        with open(bpf_slice_exits_file, "w") as f:
+            w = csv.writer(f)
+            all_slices = set()
+            for tick in stats:
+                for sl in tick.get("bpf_slice_exits", {}):
+                    all_slices.add(sl)
+            all_slices = sorted(all_slices)
+            header = ["Tick", "Wall_Clock", "Phase"]
+            for sl in all_slices:
+                header.extend(["%s_exits" % sl, "%s_xcores" % sl])
+            header.append("total_exits")
+            w.writerow(header)
+            for tick in stats:
+                bse = tick.get("bpf_slice_exits", {})
+                tick_delta = tick.get("tick_delta_s", 5) or 5
+                interval_ns = tick_delta * 1000000000
+                row = [tick.get("tick", ""), tick.get("wall_clock", ""), tick.get("phase", "")]
+                total_exits = 0
+                for sl in all_slices:
+                    sd = bse.get(sl, {})
+                    cnt = sd.get("count", 0)
+                    xcores = round(sd.get("run_ns", 0) / interval_ns, 4) if interval_ns > 0 else 0.0
+                    row.extend([cnt, xcores])
+                    total_exits += cnt
+                row.append(total_exits)
+                w.writerow(row)
+        print("BPF slice exits CSV saved to %s" % bpf_slice_exits_file)
