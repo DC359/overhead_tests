@@ -381,10 +381,25 @@ class schedstatCollector(StatsCollectorTmpl):
 
         self._host.host_cmd("pkill -f schedstat_collect 2>/dev/null || true; "
                             "pkill -f bpftrace 2>/dev/null || true; "
+                            "pkill -f systemd-cgtop 2>/dev/null || true; "
+                            "pkill -f mpstat 2>/dev/null || true; "
+                            "pkill -f 'sar -q' 2>/dev/null || true; "
                             "rm -f %s %s %s %s %s /tmp/cgtop_log.txt /tmp/mpstat_log.txt /tmp/sar_log.txt "
                             "/tmp/cgtop_bg.pid /tmp/mpstat_bg.pid /tmp/sar_bg.pid"
                             % (REMOTE_RESULTS_PATH, REMOTE_PID_PATH,
                                REMOTE_BPF_LOG, REMOTE_BPF_PID, REMOTE_BPF_STDERR))
+        time.sleep(0.5)
+        stale = self._host.host_cmd("pgrep -c systemd-cgtop 2>/dev/null || echo 0")
+        stale = stale.strip() if isinstance(stale, str) else stale.decode().strip()
+        if stale != "0":
+            print("WARNING: %s stale systemd-cgtop process(es) — force-killing" % stale)
+            self._host.host_cmd("pkill -9 -f systemd-cgtop 2>/dev/null || true")
+
+        stale_bpf = self._host.host_cmd("pgrep -c bpftrace 2>/dev/null || echo 0")
+        stale_bpf = stale_bpf.strip() if isinstance(stale_bpf, str) else stale_bpf.decode().strip()
+        if stale_bpf != "0":
+            print("WARNING: %s stale bpftrace process(es) — force-killing" % stale_bpf)
+            self._host.host_cmd("pkill -9 -f bpftrace 2>/dev/null || true")
 
         shell_run("scp %s %s root@%s:%s" % (scp_opts, LOCAL_C_BINARY, host_ip, REMOTE_C_BINARY))
 
@@ -511,6 +526,9 @@ class schedstatCollector(StatsCollectorTmpl):
         self._host.host_cmd("'kill $(cat /tmp/cgtop_bg.pid) 2>/dev/null; "
                             "kill $(cat /tmp/mpstat_bg.pid) 2>/dev/null; "
                             "kill $(cat /tmp/sar_bg.pid) 2>/dev/null'")
+        self._host.host_cmd("pkill -f systemd-cgtop 2>/dev/null || true; "
+                            "pkill -f mpstat 2>/dev/null || true; "
+                            "pkill -f 'sar -q' 2>/dev/null || true")
         print("C collector stopped (pid=%s), bpftrace stopped (pid=%s), "
               "cgtop+mpstat+sar stopped" % (self._loop_pid, bp or "?"))
 

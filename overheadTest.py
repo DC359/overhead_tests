@@ -1,138 +1,84 @@
 #!/usr/bin/env python3
 
-VERSION = "0.6"
-
 from util.ObjFactory import *
 from util.cvm import *
-import time, sys, getopt, json, datetime
-
+import time, sys, getopt, json
 
 cvm_ip = ''
 config_file = ''
 host_name = ''
 
 
-def wall_clock_now():
-    return datetime.datetime.now().strftime("%H:%M:%S")
-
-
 def run_experiment(cvm, host, config, run_number):
-    interval = config.get("interval", 5)
-    baseline_duration = config.get("baseline_duration", 15)
-    stable_ticks = config.get("stable_ticks", 24)
-    max_warmup_duration = config.get("max_warmup_duration", 300)
+    interval = config.get("interval", 30)
+    baseline_ticks = config.get("baseline_duration", 60) // interval
+    stabilization_ticks = config.get("stabilization_wait", 120) // interval
+    stable_ticks = config.get("stable_duration", 120) // interval
     clone_prefix = config.get("clone_prefix", "dirty_harry")
     pattern = "%s_*" % clone_prefix
 
-    post_poweron_duration = max_warmup_duration + (stable_ticks * interval)
-
     print("\n========== RUN %d ==========\n" % run_number)
-    print("Config: interval=%ds, baseline=%ds, max_warmup=%ds, stable_ticks=%d" % (
-        interval, baseline_duration, max_warmup_duration, stable_ticks))
-    print("Total collection after power-on: %ds" % post_poweron_duration)
 
+    # Ensure all VMs are off before starting
     print("Ensuring all test VMs are powered off...")
     cvm.vmOffAll(pattern)
     time.sleep(10)
 
-    workload_type = config.get("workload", {}).get("type", "")
-    clone_buffer = 0 if workload_type == "iperf" else config.get("clone_buffer", 5)
-
-    base_on_count = cvm.countPoweredOnVms()
-    total_test_vms = sum(1 for vm in cvm.getVmDetails()
-                         if vm.get('Name', '').startswith(clone_prefix + "_")
-                         and vm.get('Name', '')[len(clone_prefix) + 1:].isdigit())
-    expected_on = base_on_count + total_test_vms - clone_buffer
-    print("Base VMs on: %d, Test VMs: %d, Buffer: %d, Expected after power-on: %d" % (
-        base_on_count, total_test_vms, clone_buffer, expected_on))
-
+    # Setup collector
     collector = ObjFactory.getStatsCollectorObj("schedstat")
     collector.setup(host, interval)
 
-    phase_timeline = []
-    events = []
-
     # BASELINE
-    wc = wall_clock_now()
-    events.append((wc, "collection_started"))
-    phase_timeline.append((wc, "baseline", 0))
-    print("[%s] --- BASELINE (all VMs off, %ds) ---" % (wc, baseline_duration))
-    time.sleep(baseline_duration)
+    print("--- BASELINE (all VMs off) ---")
+    for _ in range(baseline_ticks):
+        time.sleep(interval)
+        collector.collect_tick(phase="baseline")
 
     # MASS POWER ON
-    wc_cmd_sent = wall_clock_now()
-    events.append((wc_cmd_sent, "vms_on_cmd_sent"))
-    phase_timeline.append((wc_cmd_sent, "power_on", 0))
-    print("[%s] --- MASS POWER ON (cmd sent) ---" % wc_cmd_sent)
-    on_out = cvm.vmOnAll(pattern)
-    wc_api_returned = wall_clock_now()
-    print("[%s] --- vmOnAll API returned ---" % wc_api_returned)
-    if on_out:
-        out_lower = on_out.lower()
-        if any(kw in out_lower for kw in ["not enough", "insufficient", "cannot", "kOutOfMemory"]):
-            print("[WARNING] Host resources exhausted — some VMs failed to power on")
+    print("--- MASS POWER ON ---")
+    cvm.vmOnAll(pattern)
 
-    wc_all_on = None
-    poll_start = time.time()
-    for _ in range(30):
-        time.sleep(1)
-        vm_count = cvm.countPoweredOnVms()
-        if vm_count >= expected_on:
-            wc_all_on = wall_clock_now()
-            events.append((wc_all_on, "all_vms_on"))
-            print("[%s] All VMs powered on (%d/%d)" % (wc_all_on, vm_count, expected_on))
-            break
-
-    poll_elapsed = time.time() - poll_start
-    if wc_all_on is None:
-        vm_count = cvm.countPoweredOnVms()
-        print("[%s] Power-on check timed out (30s). VMs on: %d / expected: %d" % (
-            wall_clock_now(), vm_count, expected_on))
-
-    wc = wall_clock_now()
-    phase_timeline.append((wc, "collecting", vm_count))
-    print("[%s] --- COLLECTING (VMs on: %d, waiting %ds for warmup+stable) ---" % (
-        wc, vm_count, post_poweron_duration))
-
-    remaining_sleep = max(0, post_poweron_duration - poll_elapsed)
-    time.sleep(remaining_sleep)
+    # WARMUP
+    print("--- WARMUP (VMs booting, dirty harry starting) ---")
+    for _ in range(stabilization_ticks):
+        time.sleep(interval)
+        collector.collect_tick(phase="warmup")
 
     vm_count = cvm.countPoweredOnVms()
-    print("[%s] VMs powered on (final): %d" % (wall_clock_now(), vm_count))
+    print("VMs powered on: %d" % vm_count)
 
-    wc = wall_clock_now()
-    events.append((wc, "collection_ended"))
-    collector.stop()
+    # --- VALIDATION START: check workload on a sample clone ---
+    svc_names = {"dirtyHarry": "dirty-harry", "fio": "fio-workload"}
+    svc_name = svc_names.get(config.get("workload", {}).get("type", ""), "unknown")
+    sample_vm_name = "%s_1" % clone_prefix
+    detail = cvm.getVmDetail(sample_vm_name)
+    sample_ip = detail.get("VM IP Addresses", "").split(",")[0].strip() if detail else ""
+    if sample_ip:
+        from libx.lib import run_remote_cmd
+        try:
+            svc_status = run_remote_cmd(sample_ip, "root", "systemctl is-active %s" % svc_name, use_password=True)
+            svc_status = svc_status.decode().strip() if isinstance(svc_status, bytes) else svc_status.strip()
+            print("[VALIDATION] %s on %s (%s): service=%s" % (svc_name, sample_vm_name, sample_ip, svc_status))
+        except Exception as e:
+            print("[VALIDATION] Could not check %s on %s (%s): %s" % (svc_name, sample_vm_name, sample_ip, e))
+    else:
+        print("[VALIDATION] Could not get IP for %s to check %s" % (sample_vm_name, svc_name))
+    # --- VALIDATION END ---
 
-    wc = wall_clock_now()
-    events.append((wc, "vms_off_cmd_sent"))
-    print("[%s] Powering off all test VMs..." % wc)
+    # STABLE
+    print("--- STABLE MEASUREMENT ---")
+    for _ in range(stable_ticks):
+        time.sleep(interval)
+        collector.collect_tick(phase="stable")
+
+    # Power off after run
+    print("Powering off all test VMs...")
     cvm.vmOffAll(pattern)
 
-    host_ip = host.getHostIp()
-    scp_opts = "-o StrictHostKeyChecking=no"
-    if host._control_active:
-        scp_opts += " -o ControlPath=%s" % host._control_socket
-    from libx.lib import shell_run
-    from statsCollector.schedstatCollector import LOCAL_FETCH_DIR
-    shell_run("scp %s root@%s:/tmp/cgtop_log.txt %s/cgtop_log_fetched.txt" % (scp_opts, host_ip, LOCAL_FETCH_DIR))
-    shell_run("scp %s root@%s:/tmp/mpstat_log.txt %s/mpstat_log_fetched.txt" % (scp_opts, host_ip, LOCAL_FETCH_DIR))
-    shell_run("scp %s root@%s:/tmp/sar_log.txt %s/sar_log_fetched.txt" % (scp_opts, host_ip, LOCAL_FETCH_DIR))
-    print("[%s] Fetched cgtop, mpstat, sar -> %s/*_fetched.txt" % (wall_clock_now(), LOCAL_FETCH_DIR))
-
-    print("\n[%s] Fetching results from host and detecting phases..." % wall_clock_now())
-    warmup_cfg = {
-        "threshold_pct": config.get("warmup_threshold_pct", 5),
-        "consecutive": config.get("warmup_consecutive", 3),
-        "stable_ticks": stable_ticks,
-    }
-    collector.fetch_and_process(phase_timeline, warmup_cfg=warmup_cfg)
-
-    return collector.exportStats(), vm_count, collector._num_cpus, expected_on, events, getattr(collector, '_bpf_summary', {})
+    return collector.exportStats(), vm_count, collector._num_cpus
 
 
 def run():
-    print("overheadTest v%s" % VERSION)
     with open(config_file) as f:
         config = json.load(f)
 
@@ -144,26 +90,22 @@ def run():
     all_runs = []
     vm_count = 0
     num_cpus = 0
-    expected_on = 0
 
     for run_num in range(1, num_runs + 1):
-        results, count, cpus, exp_on, events, bpf_summary = run_experiment(cvm, host, config, run_num)
-        all_runs.append((results, events, bpf_summary))
+        results, count, cpus = run_experiment(cvm, host, config, run_num)
+        all_runs.append(results)
         vm_count = count
         num_cpus = cpus
-        expected_on = exp_on
 
-    for i, (run_results, run_events, bpf_summary) in enumerate(all_runs):
+    # Dump results for each run
+    for i, run_results in enumerate(all_runs):
         title = {
             "vm_count": vm_count,
-            "expected_on": expected_on,
             "host": host_name,
             "run": i + 1,
             "num_runs": num_runs,
             "num_cpus": num_cpus,
             "config": config,
-            "events": run_events,
-            "bpf_summary": bpf_summary,
         }
 
         print("\n========== RESULTS: RUN %d ==========\n" % (i + 1))
@@ -174,6 +116,7 @@ def run():
         csv_dump.dumpStats(title, run_results)
 
     print("\nAll %d run(s) complete." % num_runs)
+    # REMINDER: Change num_runs to 3 in test.json once testing is validated.
 
 
 def main(argv):
