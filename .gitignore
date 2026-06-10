@@ -1,2 +1,9 @@
 *.pyc
 results_*/
+
+# Local SSH/SCP password helpers — never commit
+.rcmd.exp
+.rscp.exp
+
+# Regenerated from the target host's BTF; not needed to run the prebuilt binary
+bpf/vmlinux.h

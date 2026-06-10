@@ -1,4 +1,5 @@
 from statsCollector.schedstatCollector import schedstatCollector
+from statsCollector.bpfSnapCollector import bpfSnapCollector
 from workload.dirtyHarry import dirtyHarry
 from workload.fioWorkload import fioWorkload
 from workload.iperfWorkload import iperfWorkload  # IPERF_ADDITION
@@ -9,6 +10,7 @@ from statsDump.terminalDump import terminalDump
 class ObjFactory:
     _statsCollectorDic = {
         "schedstat": schedstatCollector,
+        "bpfsnap": bpfSnapCollector,
     }
 
     _workloadDic = {
