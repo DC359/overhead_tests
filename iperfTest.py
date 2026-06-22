@@ -303,7 +303,11 @@ def run_experiment_1host(cvm, host, config, run_number):
     base_on_count = cvm.countPoweredOnVms()
     expected_on = base_on_count + total_vms
 
-    collector = ObjFactory.getStatsCollectorObj("schedstat")
+    collector_id = config.get("collector", "bpfsnap")
+    print("[COLLECTOR] using '%s' (%s)" % (
+        collector_id,
+        "full eBPF snapshot+exit" if collector_id == "bpfsnap" else "schedstat /proc-poll + bpftrace"))
+    collector = ObjFactory.getStatsCollectorObj(collector_id)
     collector.setup(host, interval)
 
     phase_timeline = []
@@ -447,9 +451,13 @@ def run_experiment_2host(cvm, server_host, client_host, config, run_number):
     num_pairs = min(num_servers, num_clients)
     print("Server VMs: %d, Client VMs: %d, Pairs: %d" % (num_servers, num_clients, num_pairs))
 
-    server_collector = ObjFactory.getStatsCollectorObj("schedstat")
+    collector_id = config.get("collector", "bpfsnap")
+    print("[COLLECTOR] using '%s' (%s)" % (
+        collector_id,
+        "full eBPF snapshot+exit" if collector_id == "bpfsnap" else "schedstat /proc-poll + bpftrace"))
+    server_collector = ObjFactory.getStatsCollectorObj(collector_id)
     server_collector.setup(server_host, interval, label="%s server" % server_host_name)
-    client_collector = ObjFactory.getStatsCollectorObj("schedstat")
+    client_collector = ObjFactory.getStatsCollectorObj(collector_id)
     client_collector.setup(client_host, interval, label="%s client" % client_host_name)
 
     phase_timeline = []

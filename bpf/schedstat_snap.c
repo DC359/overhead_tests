@@ -234,6 +234,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // Truncate the output file once per process launch so a new run never
+    // inherits a previous run's ticks. This is the authoritative reset and is
+    // resilient to the Python-side `rm` failing (e.g. an SSH ControlMaster
+    // hiccup returning exit 255). Per-tick writes below still use append mode.
+    {
+        FILE *trunc = fopen(outpath, "w");
+        if (trunc)
+            fclose(trunc);
+        else
+            fprintf(stderr, "[snap] WARNING: could not truncate %s: %s\n",
+                    outpath, strerror(errno));
+    }
+
     // Prime the baseline: a first sweep records every live thread's odometer
     // without it being attributed to a displayed tick.
     trigger_sweep(iter_link);

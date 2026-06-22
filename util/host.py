@@ -63,13 +63,14 @@ class Host:
             pass
         self._control_active = False
 
-    def host_cmd(self, cmd):
+    def host_cmd(self, cmd, quiet=False):
         try:
             if self._control_active:
                 nested_cmd = "ssh -o ControlPath=%s root@%s %s" % (
                     self._control_socket, self.getHostIp(), cmd)
             else:
                 nested_cmd = "ssh root@%s %s" % (self.getHostIp(), cmd)
-            return self._cvm.cvm_cmd(nested_cmd)
+            return self._cvm.cvm_cmd(nested_cmd, quiet=quiet)
         except Exception as e:
-            print(e)
+            if not quiet:
+                print(e)

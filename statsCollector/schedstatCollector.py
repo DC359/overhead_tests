@@ -363,6 +363,11 @@ class schedstatCollector(StatsCollectorTmpl):
         self._num_cpus = 0
         self._bpf_pid = None
 
+        print("=" * 72)
+        print("[COLLECTOR=schedstat] LEGACY /proc-poll (%dms) + streaming bpftrace" % COLLECT_INTERVAL_MS)
+        print("  (not the full eBPF collector — select 'bpfsnap' for that)")
+        print("=" * 72)
+
         host.open_control()
 
         out = self._host.host_cmd("nproc")

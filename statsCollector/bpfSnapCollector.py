@@ -135,7 +135,7 @@ class bpfSnapCollector(StatsCollectorTmpl):
 
         print("=" * 72)
         print("[COLLECTOR=bpfsnap] FULL eBPF snapshot+exit collector (libbpf/CO-RE)")
-        print("  in-kernel: iter/task 5s sweep + sched_process_exit hook")
+        print("  in-kernel: iter/task %ds sweep + sched_process_exit hook" % interval)
         print("  NO /proc polling, NO streaming bpftrace")
         print("  deploy mode: %s" % (
             "PREBUILT binary (no on-host build)" if self._use_prebuilt
@@ -154,15 +154,32 @@ class bpfSnapCollector(StatsCollectorTmpl):
 
         self._preflight()
 
-        # Clean any stale collector + outputs.
+        # Clean any stale collector + outputs (incl. the cgtop/mpstat/sar
+        # verification side-channel, same as the legacy schedstat collector).
+        # The "[x]" bracket prefix is a regex that matches the real process name
+        # but NOT pkill's own command line, so pkill can't kill the shell that's
+        # running it (which previously severed the SSH session -> exit 255).
+        # Double quotes are used inside the _q single-quote wrapper so patterns
+        # like "[s]ar -q" don't break the outer quoting.
         self._host.host_cmd(_q(
-            "pkill -f schedstat_snap 2>/dev/null || true; "
-            "rm -f %s %s %s" % (REMOTE_RESULTS_PATH, REMOTE_PID_PATH, REMOTE_STDERR_PATH)))
+            'pkill -f "[s]chedstat_snap" 2>/dev/null || true; '
+            'pkill -f "[s]ystemd-cgtop" 2>/dev/null || true; '
+            'pkill -f "[m]pstat" 2>/dev/null || true; '
+            'pkill -f "[s]ar -q" 2>/dev/null || true; '
+            "rm -f %s %s %s /tmp/cgtop_log.txt /tmp/mpstat_log.txt /tmp/sar_log.txt "
+            "/tmp/cgtop_bg.pid /tmp/mpstat_bg.pid /tmp/sar_bg.pid"
+            % (REMOTE_RESULTS_PATH, REMOTE_PID_PATH, REMOTE_STDERR_PATH)), quiet=True)
         time.sleep(0.3)
-        stale = _s(self._host.host_cmd(_q("pgrep -c schedstat_snap 2>/dev/null || echo 0")))
-        if stale != "0":
+        # `pgrep -c` prints "0" and exits non-zero when there are no matches; use
+        # `|| true` (not `|| echo 0`) so we don't append a second "0".
+        stale = _s(self._host.host_cmd(_q('pgrep -fc "[s]chedstat_snap" 2>/dev/null || true'), quiet=True))
+        if stale not in ("0", ""):
             print("WARNING: %s stale schedstat_snap process(es) — force-killing" % stale)
-            self._host.host_cmd(_q("pkill -9 -f schedstat_snap 2>/dev/null || true"))
+            self._host.host_cmd(_q('pkill -9 -f "[s]chedstat_snap" 2>/dev/null || true'), quiet=True)
+        stale_cg = _s(self._host.host_cmd(_q('pgrep -fc "[s]ystemd-cgtop" 2>/dev/null || true'), quiet=True))
+        if stale_cg not in ("0", ""):
+            print("WARNING: %s stale systemd-cgtop process(es) — force-killing" % stale_cg)
+            self._host.host_cmd(_q('pkill -9 -f "[s]ystemd-cgtop" 2>/dev/null || true'), quiet=True)
 
         # Deploy to the host. Prefer the precompiled binary; only build on-host
         # when no prebuilt binary is shipped in the repo.
@@ -204,14 +221,27 @@ class bpfSnapCollector(StatsCollectorTmpl):
                     "or fall back to the bpftrace-based 'schedstat' collector.")
             print("BPF collector built successfully on host.")
 
-        # Launch it (mirrors schedstatCollector's nohup pattern).
+        # Launch the BPF collector AND the cgtop/mpstat/sar verification
+        # side-channel in ONE ssh command, all backgrounded together, so every
+        # measurement clock starts in the same instant — there is no time gap
+        # between what the eBPF code measures and what the scripts measure.
+        # The individual nohup blocks are byte-for-byte the legacy
+        # schedstatCollector launches, so the *_log.txt output is identical.
+        # `: > %s` truncates the results file on the HOST, inside the same
+        # launch command and immediately before exec, so a fresh run can never
+        # inherit a previous run's ticks. This is independent of the upstream
+        # cleanup `rm` (which host_cmd silently swallows if the SSH hop returns
+        # exit 255), and complements the binary's own startup truncation.
         self._host.host_cmd(
-            "'nohup bash -c \"echo \\$\\$ > %s; exec %s %d %s %s %s %s %s %s\" "
-            "</dev/null >>%s 2>&1 &'"
-            % (REMOTE_PID_PATH, REMOTE_BIN, interval,
+            "'nohup bash -c \"echo \\$\\$ > %s; : > %s; exec %s %d %s %s %s %s %s %s\" </dev/null >>%s 2>&1 & "
+            "nohup bash -c \"echo \\$\\$ > /tmp/cgtop_bg.pid; date > /tmp/cgtop_log.txt; exec systemd-cgtop -b -d %d -n 0 >> /tmp/cgtop_log.txt\" </dev/null >/dev/null 2>&1 & "
+            "nohup bash -c \"echo \\$\\$ > /tmp/mpstat_bg.pid; exec mpstat %d >> /tmp/mpstat_log.txt\" </dev/null >/dev/null 2>&1 & "
+            "nohup bash -c \"echo \\$\\$ > /tmp/sar_bg.pid; exec sar -q %d >> /tmp/sar_log.txt\" </dev/null >/dev/null 2>&1 &'"
+            % (REMOTE_PID_PATH, REMOTE_RESULTS_PATH, REMOTE_BIN, interval,
                REMOTE_RESULTS_PATH, REMOTE_PID_PATH,
                SLICE_PATHS[0], SLICE_PATHS[1], SLICE_PATHS[2], SERVICE_PARENT,
-               REMOTE_STDERR_PATH))
+               REMOTE_STDERR_PATH,
+               interval, interval, interval))
 
         # Wait for the collector to report its pid.
         for attempt in range(6):
@@ -246,7 +276,8 @@ class bpfSnapCollector(StatsCollectorTmpl):
             print("[verify] BPF programs loaded in kernel: %s prog(s) matching snap_iter/snap_exit, "
                   "%s iter link(s) attached" % (prog_show, iter_attached))
 
-        print("BPF collector RUNNING (pid=%s, interval=%ds, cpus=%d) — full eBPF path confirmed"
+        print("BPF collector RUNNING (pid=%s, interval=%ds, cpus=%d) — full eBPF path confirmed; "
+              "cgtop+mpstat+sar verification side-channel also started"
               % (self._loop_pid, interval, self._num_cpus))
 
     def _preflight(self):
@@ -314,10 +345,23 @@ class bpfSnapCollector(StatsCollectorTmpl):
 
     def stop(self):
         if self._loop_pid:
-            self._host.host_cmd("kill %s 2>/dev/null" % self._loop_pid)
+            self._host.host_cmd("kill %s 2>/dev/null" % self._loop_pid, quiet=True)
             time.sleep(1)
-            self._host.host_cmd("kill -9 %s 2>/dev/null" % self._loop_pid)
-        self._host.host_cmd(_q("pkill -f schedstat_snap 2>/dev/null || true"))
+            # exit 1 here just means the graceful kill above already worked.
+            self._host.host_cmd("kill -9 %s 2>/dev/null" % self._loop_pid, quiet=True)
+        # "[s]chedstat_snap" so pkill can't match (and kill) its own SSH shell.
+        self._host.host_cmd(_q('pkill -f "[s]chedstat_snap" 2>/dev/null || true'), quiet=True)
+
+        # Stop the cgtop/mpstat/sar side-channel by their saved pids first (the
+        # reliable path), then a bracket-trick pkill as a fallback. This second
+        # command MUST be _q-wrapped so its `;`/`||` run on the HOST, not the CVM
+        # (unwrapped, it previously executed locally and SIGTERM'd our own shell).
+        self._host.host_cmd(_q("kill $(cat /tmp/cgtop_bg.pid) 2>/dev/null; "
+                               "kill $(cat /tmp/mpstat_bg.pid) 2>/dev/null; "
+                               "kill $(cat /tmp/sar_bg.pid) 2>/dev/null"), quiet=True)
+        self._host.host_cmd(_q('pkill -f "[s]ystemd-cgtop" 2>/dev/null || true; '
+                               'pkill -f "[m]pstat" 2>/dev/null || true; '
+                               'pkill -f "[s]ar -q" 2>/dev/null || true'), quiet=True)
 
         if self._schedstats_changed and self._schedstats_old is not None:
             self._host.host_cmd(_q("sysctl -w kernel.sched_schedstats=%s >/dev/null 2>&1 || "
@@ -339,6 +383,19 @@ class bpfSnapCollector(StatsCollectorTmpl):
         shell_run("scp %s root@%s:%s %s" % (scp_opts, host_ip, REMOTE_RESULTS_PATH, local_results))
         with open(local_results, "r") as f:
             content = f.read()
+
+        # Fetch the cgtop/mpstat/sar verification logs (same files/paths the legacy
+        # iperf flow produced) so the eBPF x_cores can be checked against cgtop.
+        for remote_log, local_name in (
+                ("/tmp/cgtop_log.txt", "cgtop_log_fetched.txt"),
+                ("/tmp/mpstat_log.txt", "mpstat_log_fetched.txt"),
+                ("/tmp/sar_log.txt", "sar_log_fetched.txt")):
+            try:
+                shell_run("scp %s root@%s:%s %s/%s"
+                          % (scp_opts, host_ip, remote_log, LOCAL_FETCH_DIR, local_name))
+            except Exception as e:
+                print("WARNING: could not fetch %s: %s" % (remote_log, e))
+        print("[COLLECTOR=bpfsnap] Fetched cgtop, mpstat, sar -> %s/*_fetched.txt" % LOCAL_FETCH_DIR)
 
         raw_ticks = parse_snap_results(content)
         print("[COLLECTOR=bpfsnap] Fetched %d BPF ticks from host (interval=%ds, full eBPF path)"

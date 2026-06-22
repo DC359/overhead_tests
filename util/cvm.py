@@ -39,7 +39,7 @@ class Cvm:
     def getHosts(self):
         return self._hostDic.values()
 
-    def cvm_cmd(self, cmd):
+    def cvm_cmd(self, cmd, quiet=False):
         out = ''
         try:
             if self._cvmip == '':
@@ -50,7 +50,11 @@ class Cvm:
                 out = out.decode()
             return out
         except Exception as e:
-            print(e)
+            # `quiet` suppresses benign failures from best-effort commands
+            # (e.g. cleanup pkills / kill -9 of an already-exited pid), which
+            # otherwise spam the log with harmless SSH exit-255 / exit-1 lines.
+            if not quiet:
+                print(e)
 
     def getVmDetail(self, vmname):
         cmd = "ncli virtualmachine ls name=%s" % vmname

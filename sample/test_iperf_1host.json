@@ -1,4 +1,5 @@
 {
+    "collector": "bpfsnap",
     "vm_size_gb": 5,
     "interval": 5,
     "baseline_duration": 30,
