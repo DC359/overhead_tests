@@ -99,7 +99,7 @@ def run():
             print("  Clone %s failed: %s" % (clone_name, e))
 
     # Step 10: Verify workload works on a clone
-    svc_names = {"dirtyHarry": "dirty-harry", "fio": "fio-workload"}
+    svc_names = {"dirtyHarry": "dirty-harry", "fio": "fio-workload", "redis": "redis-workload"}
     test_clone_name = "%s_1" % clone_prefix
     test_clone = cvm._vmDic.get(test_clone_name)
     if test_clone:
@@ -172,8 +172,12 @@ def main(argv):
         elif opt in ("-H", "--host"):
             host_name = arg
 
-    if config_file == '' or host_name == '':
-        print("Config file and host name are required.")
+    if config_file == '':
+        config_file = 'sample/redis.json'
+        print("No config provided, defaulting to %s" % config_file)
+
+    if host_name == '':
+        print("Host name is required.")
         print(helpmsg)
         sys.exit(2)
 

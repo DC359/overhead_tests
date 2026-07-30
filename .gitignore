@@ -1,6 +1,13 @@
 *.pyc
 results_*/
 
+# One-off local analysis artifacts (cgtop scratch, ad-hoc parse scripts)
+cgtop_*.txt
+cgtop_*.html
+cgtop_*.csv
+cgtop_*.json
+_tmp_*.py
+
 # Local SSH/SCP password helpers — never commit
 .rcmd.exp
 .rscp.exp

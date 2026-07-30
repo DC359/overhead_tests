@@ -65,7 +65,7 @@ def run_experiment(cvm, host, config, run_number):
     print("VMs powered on: %d" % vm_count)
 
     # --- VALIDATION: check workload on a sample clone ---
-    svc_names = {"dirtyHarry": "dirty-harry", "fio": "fio-workload"}
+    svc_names = {"dirtyHarry": "dirty-harry", "fio": "fio-workload", "redis": "redis-workload"}
     svc_name = svc_names.get(config.get("workload", {}).get("type", ""), "unknown")
     sample_vm_name = "%s_1" % clone_prefix
     detail = cvm.getVmDetail(sample_vm_name)
@@ -176,8 +176,12 @@ def main(argv):
         elif opt in ("-H", "--host"):
             host_name = arg
 
-    if config_file == '' or host_name == '':
-        print("Config file and host name are required.")
+    if config_file == '':
+        config_file = 'sample/redis.json'
+        print("No config provided, defaulting to %s" % config_file)
+
+    if host_name == '':
+        print("Host name is required.")
         print(helpmsg)
         sys.exit(2)
 
