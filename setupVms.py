@@ -13,6 +13,9 @@ host_name = ''
 
 def run():
     print("setupVms v%s" % VERSION)
+    from util.credentials import prompt_vm_password_once
+    prompt_vm_password_once()
+
     with open(config_file) as f:
         config = json.load(f)
 

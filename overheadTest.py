@@ -73,7 +73,7 @@ def run_experiment(cvm, host, config, run_number):
     if sample_ip:
         from libx.lib import run_remote_cmd
         try:
-            svc_status = run_remote_cmd(sample_ip, "root", "systemctl is-active %s" % svc_name, use_password=True)
+            svc_status = run_remote_cmd(sample_ip, "root", "systemctl is-active %s" % svc_name, use_password=False)
             svc_status = svc_status.decode().strip() if isinstance(svc_status, bytes) else svc_status.strip()
             print("[VALIDATION] %s on %s (%s): service=%s" % (svc_name, sample_vm_name, sample_ip, svc_status))
         except Exception as e:

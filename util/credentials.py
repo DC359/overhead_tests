@@ -1,11 +1,8 @@
 """
 Credential helpers for overhead-tests.
 
-Passwords are:
-- Taken from environment variables when set
-- Otherwise prompted once per process (hidden input)
-- Cached in memory for the rest of the run
-- Never stored in source or on disk
+VM password is collected once at setup time (or via VM_PASSWORD env).
+Experiment runs should use SSH keys after setup and must not prompt mid-run.
 """
 
 import os
@@ -14,19 +11,38 @@ import getpass
 _cache = {}
 
 
+def prompt_vm_password_once():
+    """
+    Call at the start of setupVms only.
+
+    Uses VM_PASSWORD if set; otherwise prompts once (hidden) and caches it.
+    """
+    if "vm" in _cache:
+        return _cache["vm"]
+    password = os.environ.get("VM_PASSWORD")
+    if not password:
+        password = getpass.getpass("Enter VM password: ")
+    _cache["vm"] = password
+    return password
+
+
 def get_vm_password():
     """
-    Guest VM SSH password.
+    Return cached/env VM password for SSH/SCP during setup.
 
-    Env: VM_PASSWORD
-    Prompted only when password auth is needed (setup / guest checks).
+    Does not prompt. If missing, raises — so experiment runs never block
+    mid-run waiting for a password.
     """
-    if "vm" not in _cache:
-        password = os.environ.get("VM_PASSWORD")
-        if not password:
-            password = getpass.getpass("Enter VM password: ")
+    if "vm" in _cache:
+        return _cache["vm"]
+    password = os.environ.get("VM_PASSWORD")
+    if password:
         _cache["vm"] = password
-    return _cache["vm"]
+        return password
+    raise RuntimeError(
+        "VM password not set. Run setupVms.py (it asks once at the start) "
+        "or export VM_PASSWORD before setup."
+    )
 
 
 def clear_cache():

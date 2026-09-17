@@ -120,7 +120,7 @@ def start_iperf_servers(ip_map, port=5201):
         ip = ip_map[idx]
         try:
             cmd = "pkill -9 iperf3 2>/dev/null; sleep 1; nohup iperf3 -s -p %d > /dev/null 2>&1 &" % port
-            run_remote_cmd(ip, "root", cmd, use_password=True)
+            run_remote_cmd(ip, "root", cmd, use_password=False)
         except Exception as e:
             print("  [ERROR] Failed to start server on VM %d (%s): %s" % (idx, ip, e))
             failed += 1
@@ -138,7 +138,7 @@ def start_iperf_clients(client_ip_map, server_ip_map, threads=2, port=5201):
         try:
             cmd = "pkill -9 iperf3 2>/dev/null; sleep 1; nohup iperf3 -c %s -p %d -P %d -t 86400 > /dev/null 2>&1 &" % (
                 server_ip, port, threads)
-            run_remote_cmd(client_ip, "root", cmd, use_password=True)
+            run_remote_cmd(client_ip, "root", cmd, use_password=False)
         except Exception as e:
             print("  [ERROR] Failed to start client on VM %d (%s) -> server %s: %s" % (
                 client_idx, client_ip, server_ip, e))
@@ -150,7 +150,7 @@ def start_iperf_clients(client_ip_map, server_ip_map, threads=2, port=5201):
 def check_vm_ssh_reachable(ip, label="VM"):
     """Check a single VM is SSH-reachable."""
     try:
-        out = run_remote_cmd(ip, "root", "echo ALIVE", use_password=True)
+        out = run_remote_cmd(ip, "root", "echo ALIVE", use_password=False)
         out = out.decode().strip() if isinstance(out, bytes) else out.strip()
         if out == "ALIVE":
             return True
@@ -163,7 +163,7 @@ def check_vm_ssh_reachable(ip, label="VM"):
 def check_iperf_binary(ip, label="VM"):
     """Check iperf3 binary exists on the VM."""
     try:
-        out = run_remote_cmd(ip, "root", "iperf3 --version 2>&1 | head -1", use_password=True)
+        out = run_remote_cmd(ip, "root", "iperf3 --version 2>&1 | head -1", use_password=False)
         out = out.decode().strip() if isinstance(out, bytes) else out.strip()
         if "iperf" in out.lower():
             return True
@@ -177,7 +177,7 @@ def check_iperf_running(ip, role, label="VM"):
     """Check iperf3 process is running with the expected role (-s or -c)."""
     flag = "-s" if role == "server" else "-c"
     try:
-        out = run_remote_cmd(ip, "root", "pgrep -a iperf3 || echo NO_IPERF", use_password=True)
+        out = run_remote_cmd(ip, "root", "pgrep -a iperf3 || echo NO_IPERF", use_password=False)
         out = out.decode().strip() if isinstance(out, bytes) else out.strip()
         if "iperf3" in out and flag in out:
             return True
