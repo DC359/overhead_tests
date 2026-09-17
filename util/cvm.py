@@ -169,16 +169,6 @@ class Cvm:
             raise RuntimeError("Failed to clone VM '%s' -> '%s': %s" % (
                 source_vm_name, clone_name, e)) from e
 
-    # --- IPERF_ADDITION START ---
-    def vmAffinitySet(self, vm_name, host_uuid):
-        """Pin a VM to a specific host via acli vm.affinity_set."""
-        try:
-            cmd = "acli vm.affinity_set %s host_list=%s" % (vm_name, host_uuid)
-            self.cvm_cmd(cmd)
-        except Exception as e:
-            print("Failed to set affinity for %s: %s" % (vm_name, e))
-    # --- IPERF_ADDITION END ---
-
     def getMaxVms(self, host_name, vm_size_gb, buffer=5):
         try:
             host = self.getHost(host_name)
@@ -205,6 +195,39 @@ class Cvm:
             print("Host memory: total=%.1fGB used=%.1fGB free=%.1fGB | VM cost=%.2fGB | max_vms=%d (+%d buffer = %d)" %
                   (total_gb, used_gb, free_gb, vm_cost_gb, max_vms, buffer, max_vms + buffer))
             return max_vms + buffer
+        except Exception as e:
+            print(e)
+            return 0
+
+    def countVmsMatching(self, prefix):
+        """Count VMs whose name starts with clone_prefix from the config."""
+        try:
+            vms = self.getVmDetails()
+        except Exception as e:
+            print(e)
+            return 0
+        count = 0
+        for vm in vms:
+            name = vm.get("Name", "")
+            if name.startswith(prefix):
+                count += 1
+        return count
+
+    def countPoweredOnMatching(self, prefix):
+        """Count powered-on VMs whose name starts with clone_prefix.
+        Uses acli (reliable for power state) instead of ncli."""
+        try:
+            cmd = "acli vm.list power_state=on"
+            out = self.cvm_cmd(cmd)
+            if not out:
+                return 0
+            lines = out.split("\n") if isinstance(out, str) else out.decode().split("\n")
+            count = 0
+            for line in lines:
+                name = line.strip().split()[0] if line.strip() else ""
+                if name.startswith(prefix):
+                    count += 1
+            return count
         except Exception as e:
             print(e)
             return 0

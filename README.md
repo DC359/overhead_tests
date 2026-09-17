@@ -42,11 +42,11 @@ workload. Key fields:
 | `max_warmup_duration` | cap on warmup detection (s) |
 | `clone_buffer` | headroom left when computing max clones |
 | `base_vm_name` / `clone_prefix` | naming for the base VM and its clones |
-| `workload.type` | `redis`, `fio`, `iperf`, or `dirtyHarry` |
+| `workload.type` | `redis`, `fio`, or `dirtyHarry` |
 | `workload.config` | workload-specific knobs |
 
 Ready-made configs: `sample/redis.json`, `sample/redis_char.json`,
-`sample/fio_*.json`, `sample/test_iperf_*.json`, etc.
+`sample/fio_*.json`, `sample/test.json`, etc.
 
 ## Workloads (`workload/`)
 
@@ -54,8 +54,10 @@ Ready-made configs: `sample/redis.json`, `sample/redis_char.json`,
   `redis-benchmark` loop run inside each VM against `127.0.0.1`. Persistence is
   off (`--save "" --appendonly no`) so it's CPU/syscall-bound, not I/O-bound.
 - **`fio`** — disk I/O generator.
-- **`iperf`** — network throughput (clones are pinned to the target host).
 - **`dirtyHarry`** — memory-dirtying workload.
+
+> **iperf** (network overhead, 1-/2-host) is parked on branch `archive/iperf`
+> for later restore. See `ARCHIVE_IPERF_RESTORE.md` on that branch.
 
 ## Prerequisites
 
@@ -65,7 +67,7 @@ Ready-made configs: `sample/redis.json`, `sample/redis_char.json`,
 - **`sshpass`** installed locally (used to seed the SSH key onto the base VM).
 - **SSH/SCP password helpers**: `.rcmd.exp` and `.rscp.exp` are gitignored and
   must exist locally (they wrap password-based ssh/scp to the VMs).
-- **Workload binaries mirror**: `redis` and `iperf` workloads download prebuilt
+- **Workload binaries mirror**: `redis` workload downloads prebuilt
   binaries from an internal mirror (see the URL constant at the top of each
   `workload/*.py`). The base VMs have no usable apt repo, only this mirror — so
   the mirror must be reachable from the VMs, or the binaries pre-placed.
@@ -84,7 +86,7 @@ CSV (via `statsDump/`). Results directories (`results_*/`) are gitignored.
 overheadTest.py      # run the experiment
 setupVms.py          # build + clone the base VM
 util/                # Cvm/Host/Vm wrappers + ObjFactory
-workload/            # redis / fio / iperf / dirtyHarry workload definitions
+workload/            # redis / fio / dirtyHarry workload definitions
 statsCollector/      # bpfsnap + schedstat collectors
 statsDump/           # terminal + csv output
 bpf/                 # eBPF collector sources + prebuilt binary

@@ -2,7 +2,6 @@ from statsCollector.schedstatCollector import schedstatCollector
 from statsCollector.bpfSnapCollector import bpfSnapCollector
 from workload.dirtyHarry import dirtyHarry
 from workload.fioWorkload import fioWorkload
-from workload.iperfWorkload import iperfWorkload  # IPERF_ADDITION
 from workload.redisWorkload import redisWorkload
 from statsDump.csvDump import csvDump
 from statsDump.terminalDump import terminalDump
@@ -17,7 +16,6 @@ class ObjFactory:
     _workloadDic = {
         "dirtyHarry": dirtyHarry,
         "fio": fioWorkload,
-        "iperf": iperfWorkload,  # IPERF_ADDITION
         "redis": redisWorkload,
     }
 

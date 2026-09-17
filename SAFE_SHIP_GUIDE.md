@@ -81,7 +81,7 @@ Safe to delete (nothing in the main path imports these):
 
 - `schedstatCollector.py` (bpfsnap still imports from it)
 - `schedstat_collect.c` (used by schedstat path)
-- `iperfTest.py` / iperf workload (still a real entrypoint)
+- `iperfTest.py` / iperf workload (parked on branch `archive/iperf`)
 
 **Check:** `py_compile` + import factory.  
 **Commit:** `chore: remove unused prototypes and scratch files`
@@ -141,7 +141,7 @@ Change **only**:
 1. `util/cvm.py` line 131: image URL from config or `OVERHEAD_IMAGE_URL` env
 2. `workload/redisWorkload.py`: add `bin_url` to config (optional, with default for now)
 3. `workload/dirtyHarry.py`: same
-4. `workload/iperfWorkload.py`: same (if keeping iperf)
+4. `workload/iperfWorkload.py`: parked on `archive/iperf` (restore later if needed)
 
 Or **simpler first pass**: just add env var fallbacks, keep hardcoded URLs as defaults for now. Remove defaults later.
 
@@ -180,7 +180,7 @@ Pick **one** of these per day, not all at once:
 | Archive/remove `schedstat` collector + `schedstat_collect.c` | Only if nobody needs fallback |
 | Strip `-modified` columns from dumps | After one bpfsnap run looks correct |
 | Thin sample configs to 3–4 gold files | Anytime |
-| Document iperf as “advanced / separate” | Anytime (don’t rewrite it yet) |
+| Restore iperf from `archive/iperf` when needed | Later |
 
 **Check after each:** compile + one real run if collector/dumps changed.  
 **Commit:** one commit per optional step.
