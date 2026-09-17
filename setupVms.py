@@ -47,8 +47,9 @@ def run():
     print("Copying SSH key to base VM (so clones inherit passwordless access)...")
     vm_ip = base_vm.getIp()
     import subprocess
+    from util.credentials import get_vm_password
     subprocess.run(
-        ["sshpass", "-p", "nutanix/4u", "ssh-copy-id", "-o", "StrictHostKeyChecking=no", "root@%s" % vm_ip],
+        ["sshpass", "-p", get_vm_password(), "ssh-copy-id", "-o", "StrictHostKeyChecking=no", "root@%s" % vm_ip],
         check=True
     )
 
