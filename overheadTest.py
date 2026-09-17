@@ -18,8 +18,22 @@ def run_experiment(cvm, host, config, run_number):
     baseline_duration = config.get("baseline_duration", 30)
     stable_ticks = config.get("stable_ticks", 24)
     max_warmup_duration = config.get("max_warmup_duration", 120)
-    clone_prefix = config.get("clone_prefix", "dirty_harry")
+    clone_prefix = config.get("clone_prefix")
+    if not clone_prefix:
+        print("ERROR: config is missing required field 'clone_prefix'.")
+        sys.exit(2)
     pattern = "%s_*" % clone_prefix
+
+    existing = cvm.countVmsMatching(clone_prefix)
+    if existing == 0:
+        print("ERROR: no VMs matching clone_prefix '%s*' found." % clone_prefix)
+        print("  Create them first (omit --skip-setup), e.g.:")
+        print("    python3 overhead.py --host %s --config %s"
+              % (host_name, config_file or "<config.json>"))
+        print("  or: python3 setupVms.py -H %s -f %s"
+              % (host_name, config_file or "<config.json>"))
+        sys.exit(1)
+    print("Found %d VM(s) matching clone_prefix '%s*'." % (existing, clone_prefix))
 
     # The collector runs autonomously on the host. We sleep through the phases,
     # record a phase_timeline of (wall_clock, phase, vm_count), then fetch +
@@ -61,25 +75,56 @@ def run_experiment(cvm, host, config, run_number):
     cvm.vmOnAll(pattern)
     time.sleep(10)
 
-    vm_count = cvm.countPoweredOnVms()
-    print("VMs powered on: %d" % vm_count)
+    existing = cvm.countVmsMatching(clone_prefix)
+    vm_count = cvm.countPoweredOnMatching(clone_prefix)
+    print("VMs powered on: %d / %d matching clone_prefix '%s*'" % (
+        vm_count, existing, clone_prefix))
+    if vm_count == 0:
+        print("ERROR: mass power-on left 0 VMs on (pattern %s)." % pattern)
+        print("  Check that clones exist and acli vm.on succeeded.")
+        collector.stop()
+        sys.exit(1)
+    if existing and vm_count < existing:
+        print("WARNING: only %d of %d '%s*' VMs are on — others may still be "
+              "booting or failed to start." % (vm_count, existing, clone_prefix))
 
-    # --- VALIDATION: check workload on a sample clone ---
-    svc_names = {"dirtyHarry": "dirty-harry", "fio": "fio-workload", "redis": "redis-workload"}
-    svc_name = svc_names.get(config.get("workload", {}).get("type", ""), "unknown")
+    # --- VALIDATION: wait for guest IP, then check workload on a sample clone ---
+    # Service name comes from config when set; else a small type→unit map.
+    wl = config.get("workload", {}) or {}
+    svc_names = {
+        "dirtyHarry": "dirty-harry",
+        "fio": "fio-workload",
+        "redis": "redis-workload",
+    }
+    svc_name = wl.get("service") or svc_names.get(wl.get("type", ""), None)
     sample_vm_name = "%s_1" % clone_prefix
-    detail = cvm.getVmDetail(sample_vm_name)
-    sample_ip = detail.get("VM IP Addresses", "").split(",")[0].strip() if detail else ""
-    if sample_ip:
+    sample_ip = ""
+    try:
+        sample_vm = Vm(sample_vm_name, cvm)
+        print("[VALIDATION] waiting for IP on %s (up to 90s)..." % sample_vm_name)
+        sample_ip = sample_vm.getIp(timeout_s=90)
+    except Exception as e:
+        print("[VALIDATION] Could not get IP for %s: %s" % (sample_vm_name, e))
+
+    if sample_ip and svc_name:
         from libx.lib import run_remote_cmd
         try:
-            svc_status = run_remote_cmd(sample_ip, "root", "systemctl is-active %s" % svc_name, use_password=False)
+            svc_status = run_remote_cmd(
+                sample_ip, "root",
+                "systemctl is-active %s" % svc_name, use_password=False)
             svc_status = svc_status.decode().strip() if isinstance(svc_status, bytes) else svc_status.strip()
-            print("[VALIDATION] %s on %s (%s): service=%s" % (svc_name, sample_vm_name, sample_ip, svc_status))
+            print("[VALIDATION] %s on %s (%s): service=%s" % (
+                svc_name, sample_vm_name, sample_ip, svc_status))
+            if svc_status != "active":
+                print("WARNING: workload service is not active — results may be invalid.")
         except Exception as e:
-            print("[VALIDATION] Could not check %s on %s (%s): %s" % (svc_name, sample_vm_name, sample_ip, e))
-    else:
-        print("[VALIDATION] Could not get IP for %s to check %s" % (sample_vm_name, svc_name))
+            print("[VALIDATION] Could not check %s on %s (%s): %s" % (
+                svc_name, sample_vm_name, sample_ip, e))
+    elif sample_ip and not svc_name:
+        print("[VALIDATION] %s has IP %s (no workload.service / known type to check)" % (
+            sample_vm_name, sample_ip))
+    elif not sample_ip:
+        print("WARNING: proceeding without guest workload check (no IP yet).")
 
     # COLLECTING (warmup + stable determined retroactively)
     wc = wall_clock_now()
@@ -88,7 +133,7 @@ def run_experiment(cvm, host, config, run_number):
         wc, vm_count, post_warmup_duration))
     time.sleep(post_warmup_duration)
 
-    vm_count = cvm.countPoweredOnVms()
+    vm_count = cvm.countPoweredOnMatching(clone_prefix)
     print("[%s] VMs powered on (final): %d" % (wall_clock_now(), vm_count))
 
     wc = wall_clock_now()
@@ -115,10 +160,16 @@ def run():
     with open(config_file) as f:
         config = json.load(f)
 
-    num_runs = config.get("num_runs", 1)
+    num_runs = config.get("num_runs", 3)
 
     cvm = Cvm(cvm_ip)
     host = cvm.getHost(host_name)
+
+    from util.host_meta import collect_host_metadata, format_metadata_lines
+    print("\nCollecting host metadata...")
+    metadata = collect_host_metadata(host, cvm)
+    for line in format_metadata_lines(metadata):
+        print("  %s" % line)
 
     all_runs = []
     all_events = []
@@ -136,12 +187,14 @@ def run():
     for i, run_results in enumerate(all_runs):
         title = {
             "vm_count": vm_count,
+            "expected_on": vm_count,
             "host": host_name,
             "run": i + 1,
             "num_runs": num_runs,
             "num_cpus": num_cpus,
             "config": config,
             "events": all_events[i],
+            "metadata": metadata,
         }
 
         print("\n========== RESULTS: RUN %d ==========\n" % (i + 1))
@@ -152,7 +205,6 @@ def run():
         csv_dump.dumpStats(title, run_results)
 
     print("\nAll %d run(s) complete." % num_runs)
-    # REMINDER: Change num_runs to 3 in test.json once testing is validated.
 
 
 def main(argv):

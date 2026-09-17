@@ -1,20 +1,27 @@
 from libx.objtmpl import StatsDumpTmpl
+from util.host_meta import format_metadata_lines
+import math
 
 SLICE_NAMES = ["ahv-cvm.slice", "ahv-uvms.slice", "ahv.services"]
 
-DISPLAY_FIELDS = [
-    ("x_cores", "X Cores"),
-    ("y_cores", "Y Cores"),
-    ("xy_cores", "XY Cores"),
-    ("Demand", "Demand(s)"),
-    ("Supply", "Supply(s)"),
-]
+TOP_SERVICES_COUNT = 10
 
 
 def fmt_ns_to_sec(val):
     if isinstance(val, (int, float)) and val > 0:
         return "%.2f" % (val / 1e9)
     return "0.00"
+
+
+def _mean_std(vals):
+    if not vals:
+        return None, None
+    n = len(vals)
+    mean = sum(vals) / n
+    if n < 2:
+        return mean, 0.0
+    var = sum((v - mean) ** 2 for v in vals) / (n - 1)
+    return mean, math.sqrt(var)
 
 
 class terminalDump(StatsDumpTmpl):
@@ -25,74 +32,67 @@ class terminalDump(StatsDumpTmpl):
         run_num = title.get("run", "?")
         num_runs = title.get("num_runs", "?")
         num_cpus = title.get("num_cpus", "?")
+        meta = title.get("metadata") or {}
 
-        print("\n" + "=" * 120)
+        print("\n" + "=" * 90)
         print("OVERHEAD TEST RESULTS  |  VMs: %s  |  Expected: %s  |  Cores: %s  |  Run: %s/%s" % (
             vm_count, expected_on, num_cpus, run_num, num_runs))
-        print("=" * 120)
+        for line in format_metadata_lines(meta):
+            print("  %s" % line)
+        print("=" * 90)
 
-        header = "%-10s %-10s %-10s %5s %-18s" % ("Time", "Clock", "Phase", "VMs", "Slice")
-        for _, label in DISPLAY_FIELDS:
-            header += " %12s" % label
-        print(header)
-        print("-" * len(header))
-
+        # --- Top offending services (averaged over stable ticks) ---
+        stable_svc = {}
+        stable_count = 0
         for tick in stats:
-            wc = tick.get("wall_clock", "")
-            vms = tick.get("vm_count", "")
-            first_slice = True
+            if tick.get("phase") != "stable":
+                continue
+            stable_count += 1
+            for svc_name, m in tick.get("per_service", {}).items():
+                xc = m.get("x_cores")
+                if isinstance(xc, (int, float)):
+                    stable_svc.setdefault(svc_name, []).append(float(xc))
+
+        if stable_svc:
+            svc_avg = []
+            for svc_name, vals in stable_svc.items():
+                avg = sum(vals) / len(vals)
+                if avg >= 0.005:
+                    svc_avg.append((svc_name, avg))
+            svc_avg.sort(key=lambda x: -x[1])
+            top = svc_avg[:TOP_SERVICES_COUNT]
+            if top:
+                print("\n--- Top %d services by x_cores (stable avg) ---" % min(TOP_SERVICES_COUNT, len(top)))
+                print("%-40s %10s" % ("Service", "x_cores"))
+                print("-" * 52)
+                for svc_name, avg in top:
+                    print("%-40s %10.2f" % (svc_name, avg))
+
+        # --- Stable phase summary ---
+        stable_ticks = [t for t in stats if t.get("phase") == "stable"]
+        if stable_ticks:
+            print("\n--- Stable phase summary (mean ± stdev) ---")
+            print("%-18s %12s %12s %12s %6s" % ("Slice", "x_cores", "Demand(s)", "Supply(s)", "n"))
             for name in SLICE_NAMES:
-                m = tick["slices"].get(name, {})
-                if not m:
+                xs, ds, ss = [], [], []
+                for tick in stable_ticks:
+                    m = tick.get("slices", {}).get(name, {})
+                    if not m:
+                        continue
+                    if isinstance(m.get("x_cores"), (int, float)):
+                        xs.append(float(m["x_cores"]))
+                    if isinstance(m.get("Demand"), (int, float)):
+                        ds.append(m["Demand"] / 1e9)
+                    if isinstance(m.get("Supply"), (int, float)):
+                        ss.append(m["Supply"] / 1e9)
+                if not xs:
                     continue
-                if first_slice:
-                    row = "%-10s %-10s %-10s %5s %-18s" % (
-                        tick["time_delta"], wc, tick.get("phase", ""), vms, name)
-                    first_slice = False
-                else:
-                    row = "%-10s %-10s %-10s %5s %-18s" % ("", "", "", "", name)
-                for field, _ in DISPLAY_FIELDS:
-                    val = m.get(field, "")
-                    if field in ("Demand", "Supply"):
-                        row += " %12s" % fmt_ns_to_sec(val)
-                    elif isinstance(val, float):
-                        row += " %12.2f" % val
-                    else:
-                        row += " %12s" % str(val)
-                eph_xc = m.get("ephemeral_x_cores")
-                total_xc = m.get("total_x_cores")
-                if total_xc is not None:
-                    row += "  eph=%.3f total=%.3f" % (eph_xc or 0, total_xc)
-                print(row)
+                xm, xsdev = _mean_std(xs)
+                dm, dsdev = _mean_std(ds)
+                sm, ssdev = _mean_std(ss)
+                print("%-18s %6.2f±%-4.2f %6.2f±%-4.2f %6.2f±%-4.2f %6d" % (
+                    name, xm, xsdev, dm, dsdev, sm, ssdev, len(xs)))
+        else:
+            print("\n[WARNING] No stable ticks recorded — cannot produce summary.")
 
-            print("")
-
-        if stats and stats[-1].get("per_service"):
-            print("\n--- Per-Service (last tick) ---")
-            svc_header = "%-35s" % "Service"
-            for _, label in DISPLAY_FIELDS:
-                svc_header += " %12s" % label
-            svc_header += " %10s %10s %6s" % ("Eph_X", "Total_X", "Eph#")
-            print(svc_header)
-            print("-" * len(svc_header))
-
-            last_tick = stats[-1]
-            for svc_name, m in sorted(last_tick.get("per_service", {}).items()):
-                row = "%-35s" % svc_name
-                for field, _ in DISPLAY_FIELDS:
-                    val = m.get(field, "")
-                    if field in ("Demand", "Supply"):
-                        row += " %12s" % fmt_ns_to_sec(val)
-                    elif isinstance(val, float):
-                        row += " %12.2f" % val
-                    else:
-                        row += " %12s" % str(val)
-                eph_xc = m.get("ephemeral_x_cores")
-                total_xc = m.get("total_x_cores")
-                eph_cnt = m.get("ephemeral_count")
-                row += " %10s" % ("%.4f" % eph_xc if eph_xc else "")
-                row += " %10s" % ("%.4f" % total_xc if total_xc else "")
-                row += " %6s" % (str(eph_cnt) if eph_cnt else "")
-                print(row)
-
-        print("\n" + "=" * 120)
+        print("\n" + "=" * 90)

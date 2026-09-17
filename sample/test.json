@@ -6,7 +6,7 @@
     "warmup_threshold_pct": 5,
     "warmup_consecutive": 3,
     "max_warmup_duration": 0,
-    "num_runs": 1,
+    "num_runs": 3,
     "clone_buffer": 5,
     "base_vm_name": "dirty_harry_base",
     "clone_prefix": "dirty_harry",

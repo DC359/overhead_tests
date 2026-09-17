@@ -6,7 +6,7 @@
     "warmup_threshold_pct": 5,
     "warmup_consecutive": 3,
     "max_warmup_duration": 300,
-    "num_runs": 1,
+    "num_runs": 3,
     "clone_buffer": 5,
     "base_vm_name": "fio_rw_base",
     "clone_prefix": "fio_rw",

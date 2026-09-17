@@ -16,22 +16,30 @@ class Host:
     def getHostIp(self):
         return self._hostdetails['Hypervisor Address']
 
-    # --- IPERF_ADDITION START ---
     def getHostUuid(self):
-        """Get the host UUID needed for vm.affinity_set.
-        Looks up via 'acli host.list' since ncli host ls uses a different ID format."""
-        out = self._cvm.cvm_cmd("acli host.list")
-        if isinstance(out, bytes):
-            out = out.decode()
+        """Host UUID for affinity / metadata (prefer ncli Id, then acli)."""
+        raw_id = self._hostdetails.get("Id", "") or ""
+        if "::" in raw_id:
+            return raw_id.split("::")[1]
+        # Avoid returning the hypervisor IP as a fake UUID
         host_ip = self.getHostIp()
-        for line in out.split("\n"):
-            if host_ip in line:
-                return line.split()[0].strip()
-        raw_id = self._hostdetails.get('Id', '')
-        if '::' in raw_id:
-            return raw_id.split('::')[1]
+        if raw_id and raw_id != host_ip and not raw_id.replace(".", "").isdigit():
+            return raw_id
+        out = self._cvm.cvm_cmd("acli host.list", quiet=True)
+        if isinstance(out, bytes):
+            out = out.decode(errors="replace")
+        if out:
+            import re
+            for line in out.split("\n"):
+                if host_ip not in line:
+                    continue
+                # Prefer a UUID-shaped token on the matching row
+                for tok in line.split():
+                    if re.match(
+                            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", tok):
+                        return tok
         return raw_id
-    # --- IPERF_ADDITION END ---
 
     def _ssh_ctrl_opts(self):
         return "-o ControlPath=%s" % self._control_socket
