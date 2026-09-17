@@ -4,7 +4,7 @@ import time
 import os
 
 # Prebuilt redis binaries hosted on the internal mirror (same pattern as
-# dirtyHarry / iperf — the base VMs have no usable apt repo, only this mirror).
+# dirtyHarry — the base VMs have no usable apt repo, only this mirror).
 # Build them once on a Debian 12 box with:  make MALLOC=libc -j
 # (MALLOC=libc + bundled lua/hiredis => no external lib deps, just glibc), then
 # upload src/redis-server and src/redis-benchmark to this URL.

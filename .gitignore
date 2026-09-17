@@ -1,6 +1,11 @@
 *.pyc
 results_*/
 
+# Local phase / baseline capture dirs (not part of the product)
+after_phase*/
+golden_baseline/
+EXHAUSTIVE_EXECUTION_PLAN.md
+
 # One-off local analysis artifacts (cgtop scratch, ad-hoc parse scripts)
 cgtop_*.txt
 cgtop_*.html
