@@ -8,14 +8,17 @@ class Vm:
         self._cvm = cvm
         self._lastquery = self._cvm.getVmDetail(self._vmname)
 
-    def getIp(self):
+    def getIp(self, timeout_s=300):
+        start = time.time()
         while True:
-            ip = self._lastquery['VM IP Addresses'].split(',')[0]
-            if not (ip == ''):
-                break
+            ip = self._lastquery.get('VM IP Addresses', '').split(',')[0].strip()
+            if ip:
+                return ip
+            if time.time() - start > timeout_s:
+                raise TimeoutError(
+                    "Timed out after %ds waiting for IP on VM '%s'" % (timeout_s, self._vmname))
             time.sleep(1)
             self._lastquery = self._cvm.getVmDetail(self._vmname)
-        return self._lastquery['VM IP Addresses'].split(',')[0]
 
     def getHostId(self):
         self._lastquery = self._cvm.getVmDetail(self._vmname)
@@ -26,15 +29,11 @@ class Vm:
             self._lastquery = self._cvm.getVmDetail(self._vmname)
         return self._lastquery['Uuid']
 
-    def vm_cmd(self, cmd):
-        try:
-            out = run_remote_cmd(self.getIp(), 'root', cmd, use_password=True)
-            if isinstance(out, bytes):
-                out = out.decode()
-            return out
-        except Exception as e:
-            print(e)
-            return ''
+    def vm_cmd(self, cmd, timeout=30):
+        out = run_remote_cmd(self.getIp(), 'root', cmd, use_password=True, timeout=timeout)
+        if isinstance(out, bytes):
+            out = out.decode()
+        return out
 
     def vm_cmd_non_blocking(self, cmd):
         try:
@@ -45,11 +44,24 @@ class Vm:
     def getVmName(self):
         return self._vmname
 
-    def waitForReady(self):
+    def waitForReady(self, timeout_s=300):
+        """Wait until guest SSH works. Fail fast on bad password; time out otherwise."""
+        start = time.time()
         while True:
-            out = self.vm_cmd("echo hello").strip()
-            if out == 'hello':
-                break
+            if time.time() - start > timeout_s:
+                raise TimeoutError(
+                    "Timed out after %ds waiting for SSH on VM '%s'" % (timeout_s, self._vmname))
+            try:
+                out = self.vm_cmd("echo hello", timeout=30).strip()
+                if out == 'hello':
+                    return
+            except Exception as e:
+                msg = str(e)
+                if "Permission denied" in msg or "exit status 5" in msg:
+                    raise RuntimeError(
+                        "SSH auth failed for VM '%s' (wrong VM password?). "
+                        "Re-run setup with the correct password." % self._vmname) from e
+                # IP/SSH not ready yet — keep waiting until timeout
             time.sleep(2)
 
     def vmOff(self):
@@ -59,11 +71,8 @@ class Vm:
             print(e)
 
     def vmOn(self):
-        try:
-            self._cvm.vmOn(self)
-            self.waitForReady()
-        except Exception as e:
-            print(e)
+        self._cvm.vmOn(self)
+        self.waitForReady()
 
     def vmUpdate(self, memory, cpu):
         try:
