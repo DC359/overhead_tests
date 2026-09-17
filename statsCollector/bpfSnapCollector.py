@@ -19,11 +19,13 @@ ObjFactory.getStatsCollectorObj("bpfsnap").
 
 from libx.objtmpl import StatsCollectorTmpl
 from libx.lib import shell_run
+from util.retry import retry_call
 from statsCollector.schedstatCollector import (
     _build_metrics, SLICE_NAMES, SLICE_PATHS, SERVICE_PARENT, LOCAL_FETCH_DIR,
 )
 import os
 import time
+import subprocess
 
 # Local source dir holding the BPF + loader + Makefile.
 BPF_SRC_DIR = os.path.join(
@@ -186,7 +188,12 @@ class bpfSnapCollector(StatsCollectorTmpl):
         self._host.host_cmd("mkdir -p %s" % REMOTE_BUILD_DIR)
         if self._use_prebuilt:
             print("Shipping precompiled schedstat_snap to host (%s)..." % REMOTE_BIN)
-            shell_run("scp %s %s root@%s:%s" % (scp_opts, PREBUILT_BIN, host_ip, REMOTE_BIN))
+            retry_call(
+                lambda: shell_run(
+                    "scp %s %s root@%s:%s" % (scp_opts, PREBUILT_BIN, host_ip, REMOTE_BIN),
+                    timeout=60),
+                max_attempts=2, delay=2,
+                exceptions=(subprocess.CalledProcessError, TimeoutError, OSError))
             self._host.host_cmd(_q("chmod +x %s" % REMOTE_BIN))
             bin_ok = _s(self._host.host_cmd(_q("test -x %s && echo OK || echo MISSING" % REMOTE_BIN)))
             if bin_ok != "OK":
@@ -207,7 +214,12 @@ class bpfSnapCollector(StatsCollectorTmpl):
                 local = os.path.join(BPF_SRC_DIR, fname)
                 if not os.path.isfile(local):
                     raise RuntimeError("BPF source missing locally: %s" % local)
-                shell_run("scp %s %s root@%s:%s/%s" % (scp_opts, local, host_ip, REMOTE_BUILD_DIR, fname))
+                retry_call(
+                    lambda: shell_run(
+                        "scp %s %s root@%s:%s/%s" % (scp_opts, local, host_ip, REMOTE_BUILD_DIR, fname),
+                        timeout=60),
+                    max_attempts=2, delay=2,
+                    exceptions=(subprocess.CalledProcessError, TimeoutError, OSError))
 
             print("Building BPF collector on host (clang + bpftool + libbpf)...")
             build_out = self._host.host_cmd(
@@ -380,7 +392,12 @@ class bpfSnapCollector(StatsCollectorTmpl):
             scp_opts += " -o ControlPath=%s" % self._host._control_socket
 
         local_results = os.path.join(LOCAL_FETCH_DIR, "bpfsnap_results_fetched.txt")
-        shell_run("scp %s root@%s:%s %s" % (scp_opts, host_ip, REMOTE_RESULTS_PATH, local_results))
+        retry_call(
+            lambda: shell_run(
+                "scp %s root@%s:%s %s" % (scp_opts, host_ip, REMOTE_RESULTS_PATH, local_results),
+                timeout=120),
+            max_attempts=3, delay=2,
+            exceptions=(subprocess.CalledProcessError, TimeoutError, OSError))
         with open(local_results, "r") as f:
             content = f.read()
 
@@ -391,8 +408,13 @@ class bpfSnapCollector(StatsCollectorTmpl):
                 ("/tmp/mpstat_log.txt", "mpstat_log_fetched.txt"),
                 ("/tmp/sar_log.txt", "sar_log_fetched.txt")):
             try:
-                shell_run("scp %s root@%s:%s %s/%s"
-                          % (scp_opts, host_ip, remote_log, LOCAL_FETCH_DIR, local_name))
+                retry_call(
+                    lambda rl=remote_log, ln=local_name: shell_run(
+                        "scp %s root@%s:%s %s/%s"
+                        % (scp_opts, host_ip, rl, LOCAL_FETCH_DIR, ln),
+                        timeout=60),
+                    max_attempts=2, delay=2,
+                    exceptions=(subprocess.CalledProcessError, TimeoutError, OSError))
             except Exception as e:
                 print("WARNING: could not fetch %s: %s" % (remote_log, e))
         print("[COLLECTOR=bpfsnap] Fetched cgtop, mpstat, sar -> %s/*_fetched.txt" % LOCAL_FETCH_DIR)
