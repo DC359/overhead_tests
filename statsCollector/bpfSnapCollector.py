@@ -444,7 +444,7 @@ class bpfSnapCollector(StatsCollectorTmpl):
                                         ("ahv.services", "ahv.services"),
                                         ("other", "other")):
                 run, wait, count = rt["slices"].get(raw_name, (0, 0, 0))
-                metrics = _build_metrics(run, wait, count, self._num_cpus, interval, 0, count)
+                metrics = _build_metrics(run, wait, count, self._num_cpus, interval, count)
                 pm = prev_metrics.get(disp_name, {})
                 metrics["pct_chg_X"] = round((metrics["X"] - pm["X"]) * 100.0 / pm["X"], 2) if pm.get("X", 0) > 0 else None
                 metrics["pct_chg_Y"] = round((metrics["Y"] - pm["Y"]) * 100.0 / pm["Y"], 2) if pm.get("Y", 0) > 0 else None
@@ -454,7 +454,7 @@ class bpfSnapCollector(StatsCollectorTmpl):
 
             for svc_name, (run, wait, count) in rt["services"].items():
                 tick_result["per_service"][svc_name] = _build_metrics(
-                    run, wait, count, self._num_cpus, interval, 0, count)
+                    run, wait, count, self._num_cpus, interval, count)
 
             all_tick_results.append(tick_result)
 

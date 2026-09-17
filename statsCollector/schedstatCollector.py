@@ -275,7 +275,8 @@ def parse_bpf_log(path):
     return entries, exit_summary, unaccounted
 
 
-def _build_metrics(X, Y, N, num_cpus, interval, new_tids_count, counted_tids):
+def _build_metrics(X, Y, N, num_cpus, interval, counted_tids):
+    """Shared by schedstat and bpfsnap collectors (kept as helper; bpfsnap imports it)."""
     INTERVAL_NS = interval * 1000000000
     CPU_BUDGET_NS = interval * num_cpus * 1000000000
     T = interval * N
@@ -306,7 +307,7 @@ def _build_metrics(X, Y, N, num_cpus, interval, new_tids_count, counted_tids):
 
     return {
         "X": X, "Y": Y, "Z": Z, "T": T, "tasks_count": N,
-        "new_tids_count": new_tids_count, "counted_tids": counted_tids,
+        "counted_tids": counted_tids,
         "Supply": Supply, "Demand": Demand,
         "DemandSupplyRatio": DemandSupplyRatio,
         "pct_running_x": pct_running_x,
@@ -321,36 +322,24 @@ def _build_metrics(X, Y, N, num_cpus, interval, new_tids_count, counted_tids):
 
 
 def compute_metrics(current_tids, prev_tids, num_cpus, interval):
-    X = 0;     Y = 0
-    X_mod = 0; Y_mod = 0
+    X = 0
+    Y = 0
     new_prev = {}
-    new_tids_count = 0
     have_baseline = len(prev_tids) > 0
 
     for tid, (run, wait) in current_tids.items():
         new_prev[tid] = (run, wait)
         if tid in prev_tids:
             prev_run, prev_wait = prev_tids[tid]
-            dx = run - prev_run
-            dy = wait - prev_wait
-            X += dx;     Y += dy
-            X_mod += dx; Y_mod += dy
-        else:
-            new_tids_count += 1
-            X_mod += run
-            Y_mod += wait
-            if have_baseline:
-                X += run
-                Y += wait
+            X += run - prev_run
+            Y += wait - prev_wait
+        elif have_baseline:
+            X += run
+            Y += wait
 
     N = len(current_tids)
-    counted_tids = N - new_tids_count
-    if have_baseline:
-        counted_tids = N
-    metrics = _build_metrics(X, Y, N, num_cpus, interval, 0, counted_tids)
-    metrics_mod = _build_metrics(X_mod, Y_mod, N, num_cpus, interval, new_tids_count, N)
-
-    return metrics, metrics_mod, new_prev
+    metrics = _build_metrics(X, Y, N, num_cpus, interval, N)
+    return metrics, new_prev
 
 
 class schedstatCollector(StatsCollectorTmpl):
@@ -672,10 +661,8 @@ class schedstatCollector(StatsCollectorTmpl):
             # X/Y accumulators per slice across all sub-ticks in this window
             slice_X = {n: 0 for n in SLICE_NAMES}
             slice_Y = {n: 0 for n in SLICE_NAMES}
-            slice_new_tids = {n: 0 for n in SLICE_NAMES}
             svc_X = {}
             svc_Y = {}
-            svc_new_tids = {}
 
             # HWM: for BPF dedup — records the latest (run, wait) for every TID
             # seen in ahv.services across all sub-ticks of this display window.
@@ -714,7 +701,6 @@ class schedstatCollector(StatsCollectorTmpl):
                         elif have_baseline or sub_idx > 0:
                             slice_X[n] += run
                             slice_Y[n] += wait
-                            slice_new_tids[n] = slice_new_tids.get(n, 0) + 1
                         if n == "ahv.services":
                             hwm_svc_tids[tid] = (run, wait)
 
@@ -725,7 +711,6 @@ class schedstatCollector(StatsCollectorTmpl):
                     if svc_name not in svc_X:
                         svc_X[svc_name] = 0
                         svc_Y[svc_name] = 0
-                        svc_new_tids[svc_name] = 0
                     for tid, (run, wait) in current_tids.items():
                         if tid in prev_tids_svc:
                             prev_run, prev_wait = prev_tids_svc[tid]
@@ -734,7 +719,6 @@ class schedstatCollector(StatsCollectorTmpl):
                         elif have_baseline or sub_idx > 0:
                             svc_X[svc_name] += run
                             svc_Y[svc_name] += wait
-                            svc_new_tids[svc_name] = svc_new_tids.get(svc_name, 0) + 1
 
                 prev_subtick_slices = {n: dict(sub_slices.get(n, {})) for n in SLICE_NAMES}
                 prev_subtick_services = {sn: dict(sv) for sn, sv in sub_services.items()}
@@ -773,30 +757,20 @@ class schedstatCollector(StatsCollectorTmpl):
 
             for name in SLICE_NAMES:
                 N = len(last_slices_parsed.get(name, {}))
-                nt = slice_new_tids.get(name, 0)
-                counted = N
-                metrics = _build_metrics(slice_X[name], slice_Y[name], N, self._num_cpus, self._interval, nt, counted)
-                metrics_mod = _build_metrics(slice_X[name], slice_Y[name], N, self._num_cpus, self._interval, nt, counted)
+                metrics = _build_metrics(slice_X[name], slice_Y[name], N, self._num_cpus, self._interval, N)
 
                 prev_m = prev_metrics.get(name, {})
                 metrics["pct_chg_X"] = round((metrics["X"] - prev_m["X"]) * 100.0 / prev_m["X"], 2) if prev_m.get("X", 0) > 0 else None
                 metrics["pct_chg_Y"] = round((metrics["Y"] - prev_m["Y"]) * 100.0 / prev_m["Y"], 2) if prev_m.get("Y", 0) > 0 else None
                 metrics["pct_chg_Z"] = round((metrics["Z"] - prev_m["Z"]) * 100.0 / prev_m["Z"], 2) if prev_m.get("Z", 0) > 0 else None
-                metrics_mod["pct_chg_X"] = None
-                metrics_mod["pct_chg_Y"] = None
-                metrics_mod["pct_chg_Z"] = None
 
                 tick_result["slices"][name] = metrics
-                tick_result["slices"][name + "-modified"] = metrics_mod
                 prev_metrics[name] = {"X": metrics["X"], "Y": metrics["Y"], "Z": metrics["Z"]}
 
             for svc_name in svc_X:
                 N = len(last_services_parsed.get(svc_name, {}))
-                nt = svc_new_tids.get(svc_name, 0)
-                metrics = _build_metrics(svc_X[svc_name], svc_Y[svc_name], N, self._num_cpus, self._interval, nt, N)
-                metrics_mod = _build_metrics(svc_X[svc_name], svc_Y[svc_name], N, self._num_cpus, self._interval, nt, N)
+                metrics = _build_metrics(svc_X[svc_name], svc_Y[svc_name], N, self._num_cpus, self._interval, N)
                 tick_result["per_service"][svc_name] = metrics
-                tick_result["per_service"][svc_name + "-modified"] = metrics_mod
 
             # --- BPF ephemeral aggregation with sub-tick HWM dedup ---
             # hwm_svc_tids now contains the latest (run, wait) for every TID
@@ -1020,13 +994,6 @@ class schedstatCollector(StatsCollectorTmpl):
                 supply_s = round(m["Supply"] / 1e9, 2) if m["Supply"] else 0.0
                 print("  %s: x_cores=%.2f y_cores=%.2f xy_cores=%.2f demand=%.2fs supply=%.2fs" % (
                     name, m["x_cores"], m["y_cores"], m["xy_cores"], demand_s, supply_s))
-                mod_name = name + "-modified"
-                mm = tr["slices"].get(mod_name, {})
-                if mm:
-                    md_s = round(mm["Demand"] / 1e9, 2) if mm.get("Demand") else 0.0
-                    ms_s = round(mm["Supply"] / 1e9, 2) if mm.get("Supply") else 0.0
-                    print("  %s: x_cores=%.2f y_cores=%.2f xy_cores=%.2f demand=%.2fs supply=%.2fs new_tids=%d" % (
-                        mod_name, mm["x_cores"], mm["y_cores"], mm["xy_cores"], md_s, ms_s, mm.get("new_tids_count", 0)))
             extra = []
             if all_timing[i]:
                 extra.append(all_timing[i])
@@ -1047,7 +1014,7 @@ class schedstatCollector(StatsCollectorTmpl):
             eph_svc_parts = []
             for svc_name, sm in sorted(tr.get("per_service", {}).items()):
                 ec = sm.get("ephemeral_count", 0)
-                if ec > 0 and not svc_name.endswith("-modified"):
+                if ec > 0:
                     eph_svc_parts.append("%s: +%.3f x_cores (%d exits)" % (
                         svc_name, sm.get("ephemeral_x_cores", 0), ec))
             if eph_svc_parts:
