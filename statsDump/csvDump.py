@@ -8,7 +8,7 @@ DISPLAY_FIELDS = [
 ]
 
 ALL_SLICE_FIELDS = [
-    "X", "Y", "Z", "T", "tasks_count", "new_tids_count", "counted_tids",
+    "X", "Y", "Z", "T", "tasks_count", "counted_tids",
     "Supply", "Demand", "DemandSupplyRatio",
     "pct_running_x", "pct_readyq_y", "pct_contention", "pct_cpu_util",
     "x_cores", "y_cores", "xy_cores",
@@ -46,7 +46,7 @@ class csvDump(StatsDumpTmpl):
             w.writerow(["# Expected_On: %s" % expected_on])
             w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "Phase", "Slice",
                          "x_cores", "y_cores", "xy_cores",
-                         "Demand_s", "Supply_s", "new_tids_count", "cpustat_xcores",
+                         "Demand_s", "Supply_s", "cpustat_xcores",
                          "bpf_exits",
                          "ephemeral_x_cores", "ephemeral_count", "total_x_cores"])
             for tick in stats:
@@ -64,7 +64,6 @@ class csvDump(StatsDumpTmpl):
                         metrics.get("xy_cores", ""),
                         ns_to_sec(metrics.get("Demand", 0)),
                         ns_to_sec(metrics.get("Supply", 0)),
-                        metrics.get("new_tids_count", ""),
                         cpustat_xcores.get(slice_name, ""),
                         churn.get("total", ""),
                         metrics.get("ephemeral_x_cores", ""),
@@ -79,7 +78,7 @@ class csvDump(StatsDumpTmpl):
             w = csv.writer(f)
             w.writerow(["# Expected_On: %s" % expected_on])
             w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "Phase", "Service",
-                         "x_cores", "y_cores", "xy_cores", "Demand_s", "Supply_s", "new_tids_count",
+                         "x_cores", "y_cores", "xy_cores", "Demand_s", "Supply_s",
                          "ephemeral_x_cores", "ephemeral_y_cores", "ephemeral_count",
                          "total_x_cores", "total_y_cores"])
             for tick in stats:
@@ -95,7 +94,6 @@ class csvDump(StatsDumpTmpl):
                         metrics.get("xy_cores", ""),
                         ns_to_sec(metrics.get("Demand", 0)),
                         ns_to_sec(metrics.get("Supply", 0)),
-                        metrics.get("new_tids_count", ""),
                         metrics.get("ephemeral_x_cores", ""),
                         metrics.get("ephemeral_y_cores", ""),
                         metrics.get("ephemeral_count", ""),
