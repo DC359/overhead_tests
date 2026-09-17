@@ -29,17 +29,20 @@ class ObjFactory:
     @staticmethod
     def getStatsCollectorObj(id):
         if not id in ObjFactory._statsCollectorDic:
-            exit(1)
+            available = list(ObjFactory._statsCollectorDic.keys())
+            raise ValueError("Unknown collector '%s'. Available: %s" % (id, available))
         return ObjFactory._statsCollectorDic[id]()
 
     @staticmethod
     def getWorkloadObj(id):
         if not id in ObjFactory._workloadDic:
-            exit(1)
+            available = list(ObjFactory._workloadDic.keys())
+            raise ValueError("Unknown workload '%s'. Available: %s" % (id, available))
         return ObjFactory._workloadDic[id]()
 
     @staticmethod
     def getStatsDumpObj(id):
         if not id in ObjFactory._statsDumpDic:
-            exit(1)
+            available = list(ObjFactory._statsDumpDic.keys())
+            raise ValueError("Unknown stats dump '%s'. Available: %s" % (id, available))
         return ObjFactory._statsDumpDic[id]()

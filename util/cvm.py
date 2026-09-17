@@ -104,7 +104,7 @@ class Cvm:
             cmd = "acli vm.on %s" % vm.getUuid()
             self.cvm_cmd(cmd)
         except Exception as e:
-            print(e)
+            raise RuntimeError("Failed to power on VM '%s': %s" % (vm.getVmName(), e)) from e
 
     def vmUpdate(self, vm, memory, cpu):
         try:
@@ -120,7 +120,7 @@ class Cvm:
             self._vmDic[name] = Vm(name, self)
             return self._vmDic[name]
         except Exception as e:
-            print(e)
+            raise RuntimeError("Failed to create VM '%s': %s" % (name, e)) from e
 
     def ensureImage(self, image_name="img"):
         out = self.cvm_cmd("acli image.list")
@@ -166,7 +166,8 @@ class Cvm:
             self._vmDic[clone_name] = Vm(clone_name, self)
             return self._vmDic[clone_name]
         except Exception as e:
-            print(e)
+            raise RuntimeError("Failed to clone VM '%s' -> '%s': %s" % (
+                source_vm_name, clone_name, e)) from e
 
     # --- IPERF_ADDITION START ---
     def vmAffinitySet(self, vm_name, host_uuid):
