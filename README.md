@@ -9,9 +9,16 @@ usage on the AHV host (`ahv-cvm.slice`, `ahv-uvms.slice`, `ahv.services`, …).
 ```bash
 # On the CVM (or with --cvm <ip> from your laptop):
 python3 overhead.py --host <ahv_host> --validate
+
+# First time: setup + short smoke (creates redis_vm_* clones)
 python3 overhead.py --host <ahv_host> --config sample/test_quick.json
+
+# Same VMs, longer redis run — do NOT recreate (same clone_prefix)
 python3 overhead.py --host <ahv_host> --config sample/redis.json --skip-setup
 ```
+
+`test_quick.json` and `redis.json` share `redis_base` / `redis_vm` — only timings
+differ. Clear clones only when switching workload/prefix or rebuilding.
 
 Useful flags: `--help`, `--validate`, `--skip-setup`, `--setup-only`, `--runs N`.
 
@@ -48,11 +55,29 @@ Examples: `sample/test_quick.json` (smoke), `sample/redis.json`, `sample/fio_*.j
 
 ## Prerequisites
 
+**Always**
 - Nutanix cluster (CVM + AHV host); ops via `acli` / `ncli`
-- Python 3; `sshpass` for seeding SSH onto the base VM
-- Local (gitignored) `.rcmd.exp` / `.rscp.exp` for password SSH/SCP to VMs
-- Workload binaries from the internal mirror (see `workload/*.py`)
-- Prebuilt eBPF binary: `bpf/prebuilt/schedstat_snap` (see `bpf/prebuilt/README.md`)
+- Python 3
+- SSH from the CVM to the AHV host as root
+- This repo checked out (includes `bpf/prebuilt/schedstat_snap`)
+
+**Only for setup** (first time / no `--skip-setup`)
+- `sshpass` — seeds an SSH key onto the base VM (`ssh-copy-id`)
+- Base VM root password once (prompt, or `VM_PASSWORD` env)
+- From inside the base VM, `wget` must reach the **internal package mirror**
+  (URLs in `workload/*.py`). You do **not** install redis/fio by hand: setup
+  downloads the binaries into the guest during `setupVms` / first `overhead.py` run.
+  If the mirror is unreachable, setup fails with a download error.
+
+**BPF collector (`bpfsnap`, default)**
+- Code checks for `bpf/prebuilt/schedstat_snap` on the machine running the tool.
+  - **Present (normal):** SCPs it to the host under `/root/bpfsnap/`, chmod +x,
+    smoke-tests it. No clang/bpftool install needed on the host.
+  - **Missing:** tries to **build on the AHV host** (needs clang/bpftool/libbpf —
+    AHV hosts usually don’t have these → hard fail). Fix: restore the prebuilt
+    file, or set `"collector": "schedstat"` in the config as fallback.
+- Host still needs kernel features (BTF, task iter, `sched_process_exit`); if those
+  are missing, bpfsnap fails and points you at the schedstat collector.
 
 ## Output
 
