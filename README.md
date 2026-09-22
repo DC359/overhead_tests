@@ -1,101 +1,156 @@
 # overhead-tests
 
-Measure **AHV host / CVM CPU overhead** while a fleet of user VMs (UVMs) runs a
-workload. Clones a base VM, powers them on together, and records per-cgroup CPU
-usage on the AHV host (`ahv-cvm.slice`, `ahv-uvms.slice`, `ahv.services`, …).
+Measure **AHV host CPU overhead** while many user VMs (UVMs) run a workload.
 
-## Quick start (unified CLI)
+**What happens:** the tool looks at free memory on the AHV host, creates as many
+clones as will fit (each sized by `vm_size_gb` in the config — default often
+5 GB), powers them on together, and records CPU use in host cgroups
+(`ahv-cvm.slice`, `ahv-uvms.slice`, `ahv.services`, …). You can change VM size,
+clone count headroom, sample interval, how long to run, workload type, and more
+in the JSON under `sample/`.
 
-```bash
-# On the CVM (or with --cvm <ip> from your laptop):
-python3 overhead.py --host <ahv_host> --validate
-
-# First time: setup + short smoke (creates redis_vm_* clones)
-python3 overhead.py --host <ahv_host> --config sample/test_quick.json
-
-# Same VMs, longer redis run — do NOT recreate (same clone_prefix)
-python3 overhead.py --host <ahv_host> --config sample/redis.json --skip-setup
-```
-
-`test_quick.json` and `redis.json` share `redis_base` / `redis_vm` — only timings
-differ. Clear clones only when switching workload/prefix or rebuilding.
-
-Useful flags: `--help`, `--validate`, `--skip-setup`, `--setup-only`, `--runs N`.
-
-Legacy entrypoints still work: `setupVms.py` then `overheadTest.py`.
-
-## How it works
-
-1. **Setup** — build a base VM, install the workload as a systemd service, clone
-   as many as the host can fit (`setupVms.py`, or automatic via `overhead.py`).
-2. **Experiment** — power on clones, collect with bpfsnap (default) or
-   schedstat, then print a short summary and write CSVs under `results_*/`.
-
-## Config (`sample/`)
-
-| field | meaning |
-|-------|---------|
-| `collector` | `bpfsnap` (preferred) or `schedstat` |
-| `vm_size_gb` | memory per clone |
-| `interval` | sample interval (s) |
-| `baseline_duration` | time with VMs off before power-on |
-| `stable_ticks` / `max_warmup_duration` | how long to collect after power-on |
-| `clone_buffer` | extra clones beyond free-memory estimate |
-| `base_vm_name` / `clone_prefix` | required naming |
-| `workload.type` | `redis`, `fio`, or `dirtyHarry` |
-| `num_runs` | default **3** (use 1 only when you set it) |
-
-Examples: `sample/test_quick.json` (smoke), `sample/redis.json`, `sample/fio_*.json`.
-
-## Workloads
-
-- **redis** — in-guest `redis-server` + `redis-benchmark`
-- **fio** — disk I/O
-- **dirtyHarry** — memory dirtying
+---
 
 ## Prerequisites
 
-**Always**
-- Nutanix cluster (CVM + AHV host); ops via `acli` / `ncli`
-- Python 3
-- SSH from the CVM to the AHV host as root
-- This repo checked out (includes `bpf/prebuilt/schedstat_snap`)
+Things **you** need before the first command (not how the tool works inside):
 
-**Only for setup** (first time / no `--skip-setup`)
-- `sshpass` — seeds an SSH key onto the base VM (`ssh-copy-id`)
-- Base VM root password once (prompt, or `VM_PASSWORD` env)
-- From inside the base VM, `wget` must reach the **internal package mirror**
-  (URLs in `workload/*.py`). You do **not** install redis/fio by hand: setup
-  downloads the binaries into the guest during `setupVms` / first `overhead.py` run.
-  If the mirror is unreachable, setup fails with a download error.
+1. This repo on a machine that can drive the cluster (see below).
+2. **Python 3**.
+3. The AHV **host name** (from `acli host.list` on the CVM).
+4. **For setup only** (first create of VMs): install **`sshpass`**. The script
+   will **prompt once** for the base VM root password (or use `VM_PASSWORD`).
+   `sshpass` is only there so setup can run `ssh-copy-id` with that password.
+5. During setup, new VMs must reach the **internal package mirror** (URLs in
+   `workload/*.py`). The tool downloads redis/fio/etc. into the guest — you do
+   not install those by hand.
 
-**BPF collector (`bpfsnap`, default)**
-- Code checks for `bpf/prebuilt/schedstat_snap` on the machine running the tool.
-  - **Present (normal):** SCPs it to the host under `/root/bpfsnap/`, chmod +x,
-    smoke-tests it. No clang/bpftool install needed on the host.
-  - **Missing:** tries to **build on the AHV host** (needs clang/bpftool/libbpf —
-    AHV hosts usually don’t have these → hard fail). Fix: restore the prebuilt
-    file, or set `"collector": "schedstat"` in the config as fallback.
-- Host still needs kernel features (BTF, task iter, `sched_process_exit`); if those
-  are missing, bpfsnap fails and points you at the schedstat collector.
+**Where to run**
 
-## Output
+- **Preferred:** on the **CVM** (no `--cvm` flag).
+- **Also fine:** from your **UBVM** (developer VM) with
+  `python3 overhead.py --cvm <cvm_ip> --host …`, if that UBVM can SSH to the
+  CVM as user `nutanix`.
+- **Not supported:** running on the AHV hypervisor host itself (`acli`/`ncli`
+  live on the CVM).
 
-Terminal: host metadata, top services, stable mean ± stdev.  
-Files under `results_*/`: `metadata_*.json`, `slices_*.csv`, `services_*.csv`,
-`full_slices_*.csv`, `events_*.csv` (plus bpf debug CSVs only if schedstat has data).
+(UVMs in this tool are the **user VMs** we clone for the workload — not your UBVM.)
+
+---
+
+## Quick start (from the CVM)
+
+SSH to the CVM and `cd` into this repo. Replace `<ahv_host>` with your host name.
+
+### 1. Validate connectivity
+
+```bash
+python3 overhead.py --host <ahv_host> --validate
+```
+
+Checks CVM `acli` and SSH to the AHV host. Does not create VMs.
+
+### 2. Small try run
+
+```bash
+python3 overhead.py --host <ahv_host> --config sample/test_quick.json
+```
+
+Creates clones (if needed) and runs a short smoke experiment. Good first check
+that setup + collector work.
+
+### 3. Clear VMs before another workload or a clean full run
+
+Review what is on the cluster first. Delete the VMs from your previous overhead
+run (base + clones). On a **dedicated test cluster**, you may clear everything;
+on a **shared** cluster, only delete the names you created.
+
+```bash
+acli vm.list
+# Example: remove the last quick/redis fleet
+acli vm.delete redis_vm_* confirm=true
+acli vm.delete redis_base confirm=true
+# Dedicated test cluster only — wipe all VMs if that is safe for you:
+# acli vm.delete * confirm=true
+```
+
+### 4. Normal run (example: redis)
+
+```bash
+python3 overhead.py --host <ahv_host> --config sample/redis.json
+```
+
+Setup (if needed) plus a full redis overhead experiment (default 3 runs).
+
+### 5. Same workload again later (skip setup)
+
+If the redis base + clones are already there and you only want another
+experiment:
+
+```bash
+python3 overhead.py --host <ahv_host> --config sample/redis.json --skip-setup
+```
+
+Useful flags: `--help`, `--setup-only`, `--runs N`.
+
+From your UBVM, add `--cvm <cvm_ip>` to each command above.
+
+---
+
+## Without the unified CLI
+
+Same idea in two steps:
+
+```bash
+python3 setupVms.py  -H <ahv_host> -f sample/redis.json
+python3 overheadTest.py -H <ahv_host> -f sample/redis.json
+```
+
+(Add `-i <cvm_ip>` if not running on the CVM.)
+
+---
+
+## Config (`sample/`)
+
+| Field | Meaning |
+|-------|---------|
+| `vm_size_gb` | Memory per clone (drives how many fit) |
+| `clone_buffer` | Extra clones beyond the free-memory estimate |
+| `base_vm_name` / `clone_prefix` | Required naming for base + clones |
+| `workload.type` | `redis`, `fio`, or `dirtyHarry` |
+| `interval` | Sample interval (seconds) |
+| `baseline_duration` | Time with all test VMs off before power-on |
+| `stable_ticks` / `max_warmup_duration` | How long to collect after power-on |
+| `collector` | `bpfsnap` (default) or `schedstat` |
+| `num_runs` | Default **3** |
+
+Examples: `sample/test_quick.json` (short), `sample/redis.json`, `sample/fio_*.json`.
+
+---
+
+## How it works (short)
+
+1. **Setup** sizes the host, builds one base VM, installs the workload (download
+   from the internal mirror), clones to fill memory, leaves them powered off.
+2. **Experiment** powers clones on, runs the **bpfsnap** collector on the AHV
+   host (ships `bpf/prebuilt/schedstat_snap` from this repo — no hand install),
+   then prints a summary and writes CSVs under `results_*/`.
+3. If the prebuilt BPF binary is missing, the tool tries to build on the host
+   (usually fails on AHV). Use `"collector": "schedstat"` as a fallback, or
+   restore `bpf/prebuilt/schedstat_snap`.
+
+---
 
 ## Layout
 
 ```
-overhead.py          # preferred CLI entrypoint
-setupVms.py          # build + clone base VM
-overheadTest.py      # experiment runner (also used by overhead.py)
-util/                # Cvm / Host / Vm / credentials / metadata
+overhead.py          # preferred CLI
+setupVms.py          # build + clone
+overheadTest.py      # experiment (also called by overhead.py)
+sample/              # example configs
 workload/            # redis / fio / dirtyHarry
 statsCollector/      # bpfsnap (+ schedstat fallback)
-statsDump/           # terminal + csv
-bpf/                 # eBPF sources + prebuilt binary
-sample/              # example configs
-schedstat_collect.c  # companion binary for schedstat collector
+statsDump/           # terminal + CSV
+bpf/prebuilt/        # shipped eBPF collector binary
+util/                # CVM / host / VM helpers
 ```
