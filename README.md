@@ -14,32 +14,81 @@ all configurable in JSON under `sample/`.
 
 Complete these before the first run.
 
-### 1. Get the code
+### 1. Use a one-node test cluster
 
-Clone this repository onto the **CVM** (recommended), or onto your **UBVM**
-if you will use `--cvm <cvm_ip>`.
+Use a **one-node test cluster** you are allowed to fill with clones.
+
+This tool creates many VMs (enough to consume free host memory) and may
+delete leftover test VMs. Do **not** run it on a shared or production cluster.
+
+You need:
+- CVM IP (example: `10.117.24.167`)
+- AHV host name from `acli host.list` (example: `Berwick02-4`)
+
+### 2. Get the code onto the CVM (recommended path)
+
+CVMs often have **no `git`**. The usual flow is: clone on your **UBVM**, then
+`scp` the tree to the CVM.
+
+**UBVM** = your developer VM. **UVM** = a guest VM this tool clones for the workload.
+
+#### On the UBVM — clone
+
+Prefer HTTPS (no GitHub SSH key required if the repo is public):
 
 ```bash
-git clone git@github.com:DC359/overhead_tests.git
+cd ~
+git clone https://github.com/DC359/overhead_tests.git
 cd overhead_tests
 ```
 
-### 2. Python 3
+If GitHub asks for a username/password on a private clone, use your GitHub
+username and a Personal Access Token (not your GitHub account password).
+
+#### On the UBVM — pack and copy to the CVM
+
+Prefer `/home/nutanix/tmp` on the CVM. That path is deletable later; files under
+`/home/nutanix` itself are protected by CVM `safe_rm` and are hard to remove.
+
+```bash
+cd ~
+tar czf overhead_tests.tgz overhead_tests
+scp overhead_tests.tgz nutanix@<cvm_ip>:/home/nutanix/tmp/
+```
+
+Enter the CVM `nutanix` password if asked.
+
+#### On the CVM — unpack and open the repo
+
+```bash
+ssh nutanix@<cvm_ip>
+cd /home/nutanix/tmp
+tar xzf overhead_tests.tgz
+cd overhead_tests
+ls
+```
+
+If you already copied the archive to `/home/nutanix/` instead of `tmp`, unpack
+there instead (`cd /home/nutanix && tar xzf overhead_tests.tgz`). The run works;
+cleanup with `rm -rf` may be blocked until you move the tree under `tmp`.
+
+### 3. Python 3
+
+On the machine where you run the tool (normally the CVM):
 
 ```bash
 python3 --version    # expect Python 3.x
 ```
 
-### 3. Cluster access
+### 4. Cluster access
 
-- You need a Nutanix cluster and the AHV **host name**.
-- On the CVM, confirm:
+On the CVM, confirm the host name:
 
 ```bash
 acli host.list
 ```
 
-### 4. `sshpass`
+### 5. `sshpass`
 
 The script prompts for the base VM root password (or reads `VM_PASSWORD`) and
 uses `sshpass` to seed an SSH key onto the base VM (`ssh-copy-id`). This repo
@@ -49,7 +98,7 @@ does **not** install `sshpass` for you — it must already be available:
 command -v sshpass    # must print a path; if empty, install sshpass before setup
 ```
 
-### 5. Workload binaries
+### 6. Workload binaries
 
 Prebuilt **redis / fio / dirtyHarry** binaries are hosted on an internal
 Nutanix mirror (URLs at the top of each file in `workload/`). Setup downloads
@@ -60,18 +109,17 @@ the guest must be able to reach that mirror on the network.
 
 | Location | How |
 |----------|-----|
-| **CVM** (preferred) | `python3 overhead.py --host <ahv_host> …` |
-| **UBVM** (optional) | Same commands plus `--cvm <cvm_ip>`, if the UBVM can SSH to the CVM as `nutanix` |
+| **CVM** (preferred) | `python3 overhead.py --host <ahv_host> …` after the UBVM→CVM copy above |
+| **UBVM** (optional) | Possible, but needs extra SSH keys and a small PATH fix for remote `ncli`/`acli`; prefer CVM for first runs |
 | AHV hypervisor host | Not supported (`acli` / `ncli` run on the CVM) |
-
-**UBVM** = your developer VM. **UVM** = a user VM this tool clones for the workload.
 
 ---
 
 ## Quick start (on the CVM)
 
-SSH to the CVM, `cd` into the repo, replace `<ahv_host>` with a name from
-`acli host.list`.
+After unpacking under `/home/nutanix/tmp/overhead_tests` (or your chosen path),
+`cd` into the repo. Replace `<ahv_host>` with a name from `acli host.list`.
+Do **not** pass `--cvm` when you are already on the CVM.
 
 ### 1. Validate connectivity
 
@@ -89,7 +137,7 @@ python3 overhead.py --host <ahv_host> --config sample/test_quick.json
 
 ### 3. Clear VMs before another workload or a clean full run
 
-On a **test cluster**, clear leftover VMs so the next run starts clean:
+On a **one-node test cluster**, clear leftover VMs so the next run starts clean:
 
 ```bash
 acli vm.list
@@ -114,7 +162,8 @@ python3 overhead.py --host <ahv_host> --config sample/redis.json --skip-setup
 
 Useful flags: `--help`, `--setup-only`, `--runs N`.
 
-From a UBVM, add `--cvm <cvm_ip>` to each `overhead.py` command above.
+Results are written under `results_YYYYMMDD_HHMMSS/` in the directory where you
+ran the command (on the CVM if you followed this guide).
 
 ---
 
