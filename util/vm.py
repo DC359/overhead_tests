@@ -47,13 +47,16 @@ class Vm:
     def waitForReady(self, timeout_s=300):
         """Wait until guest SSH works. Fail fast on bad password; time out otherwise."""
         start = time.time()
+        last_print = 0
         while True:
-            if time.time() - start > timeout_s:
+            elapsed = time.time() - start
+            if elapsed > timeout_s:
                 raise TimeoutError(
                     "Timed out after %ds waiting for SSH on VM '%s'" % (timeout_s, self._vmname))
             try:
                 out = self.vm_cmd("echo hello", timeout=30).strip()
                 if out == 'hello':
+                    print("  VM '%s' SSH ready (%.0fs)." % (self._vmname, elapsed))
                     return
             except Exception as e:
                 msg = str(e)
@@ -62,6 +65,10 @@ class Vm:
                         "SSH auth failed for VM '%s' (wrong VM password?). "
                         "Re-run setup with the correct password." % self._vmname) from e
                 # IP/SSH not ready yet — keep waiting until timeout
+                if elapsed - last_print >= 30:
+                    print("  Still waiting for SSH on '%s' (%.0fs)..." % (
+                        self._vmname, elapsed))
+                    last_print = elapsed
             time.sleep(2)
 
     def vmOff(self):

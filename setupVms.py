@@ -13,6 +13,7 @@ host_name = ''
 
 def run(from_unified=False):
     print("setupVms v%s" % VERSION)
+    sys.stdout.flush()
     from util.credentials import prompt_vm_password_once
     prompt_vm_password_once()
 
@@ -28,16 +29,28 @@ def run(from_unified=False):
     workload_type = config["workload"]["type"]
     clone_buffer = config.get("clone_buffer", 5)
 
+    # Cvm() runs ncli host/vm list — can take a while with many VMs; print so
+    # it does not look hung right after the password prompt.
+    print("Loading cluster inventory (ncli host/vm list)...")
+    sys.stdout.flush()
     cvm = Cvm(cvm_ip)
+    print("Inventory loaded (%d host(s), %d VM(s))." % (
+        len(cvm.getHosts()), len(cvm._vmDic)))
+    sys.stdout.flush()
 
     # Step 1: Ensure disk image exists
+    print("Checking disk image...")
+    sys.stdout.flush()
     cvm.ensureImage()
 
     # Step 2: Ensure network exists
+    print("Checking network...")
+    sys.stdout.flush()
     cvm.ensureNetwork()
 
     # Step 3: Create base VM (memory + 2 cores per vcpu)
     print("Creating base VM: %s (%dGB, num_cores_per_vcpu=2)" % (base_name, vm_size))
+    sys.stdout.flush()
     base_vm = cvm.vmCreate(base_name, vm_size)
 
     # Step 4: Attach disk and NIC
@@ -47,10 +60,12 @@ def run(from_unified=False):
     cvm.vmNicCreate(base_name)
 
     # Step 5: Power on and copy SSH key
-    print("Powering on base VM...")
+    print("Powering on base VM (waiting for guest IP + SSH; up to ~5 min)...")
+    sys.stdout.flush()
     base_vm.vmOn()
 
     print("Copying SSH key to base VM (so clones inherit passwordless access)...")
+    sys.stdout.flush()
     vm_ip = base_vm.getIp()
     import subprocess
     from util.credentials import get_vm_password
