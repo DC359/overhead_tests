@@ -64,10 +64,8 @@ def _resolve_config(args):
         config["interval"] = args.interval
         changed = True
     if args.duration is not None:
-        interval = config.get("interval", 5)
-        if interval <= 0:
-            interval = 5
-        config["stable_ticks"] = max(1, int(args.duration) // int(interval))
+        # Total seconds to collect after VMs are on (not stable_ticks).
+        config["collect_duration"] = max(1, int(args.duration))
         changed = True
     if args.clones is not None:
         # setupVms derives clone count from host capacity; this only sets buffer-related
@@ -187,9 +185,12 @@ Examples:
   %(prog)s --cvm 10.1.1.1 --host NODE1 --config sample/redis.json \\
       --skip-setup --runs 1
 
-  # Override stable duration / interval (still 3 runs unless --runs 1)
-  %(prog)s --cvm 10.1.1.1 --host NODE1 --config sample/redis.json \\
-      --skip-setup --duration 120 --interval 5
+  # Wipe matching base/clones and recreate (non-interactive)
+  %(prog)s --host NODE1 --config sample/redis.json --clear-existing
+
+  # Collect for 120s after VMs are on (1 run)
+  %(prog)s --host NODE1 --config sample/redis.json \\
+      --skip-setup --runs 1 --duration 120
 
 Legacy scripts (still supported):
   python3 setupVms.py -i <cvm> -H <host> -f <config.json>
@@ -231,7 +232,8 @@ Environment (optional; prompts if unset where needed):
     )
     parser.add_argument(
         "--duration", type=int, default=None,
-        help="Stable-phase duration in seconds (sets stable_ticks = duration/interval)",
+        help="Total collecting time in seconds after VMs are powered on "
+             "(sets collect_duration; independent of stable_ticks labeling)",
     )
     parser.add_argument(
         "--interval", type=int, default=None,
@@ -251,6 +253,11 @@ Environment (optional; prompts if unset where needed):
         help="Skip setupVms (assume clones already exist)",
     )
     parser.add_argument(
+        "--clear-existing", action="store_true",
+        help="If base/clones already exist, delete them and re-run setup "
+             "(non-interactive; otherwise you are prompted)",
+    )
+    parser.add_argument(
         "--setup-only", action="store_true",
         help="Only run setupVms; do not run the experiment",
     )
@@ -259,6 +266,68 @@ Environment (optional; prompts if unset where needed):
         version="overhead.py v%s" % VERSION,
     )
     return parser
+
+
+def _prompt_existing_vms(base_name, base_count, clone_prefix, clone_count,
+                         clear_existing=False):
+    """
+    Existing base/clones would collide with setup.
+
+    Returns:
+      'skip'  — caller should skip setup and use existing VMs
+      'clear' — caller should delete matching VMs then run setup
+
+    Exits the process on abort / non-interactive with no --clear-existing.
+    """
+    print("")
+    print("!" * 70)
+    print("Existing VMs would collide with setup:")
+    if base_count:
+        print("  base_vm_name '%s': %d VM(s)" % (base_name, base_count))
+    if clone_count:
+        print("  clone_prefix '%s_*': %d VM(s)" % (clone_prefix, clone_count))
+    print("")
+    print("  Do NOT re-run setup on top of these (duplicate names / bad IPs).")
+    print("  Options:")
+    print("    [s] Skip setup — keep existing VMs and run the experiment")
+    print("    [c] Clear base + clones matching this config, then run setup")
+    print("    [a] Abort")
+    print("!" * 70)
+
+    if clear_existing:
+        print("  (--clear-existing: clearing and re-running setup)")
+        return "clear"
+
+    if not sys.stdin.isatty():
+        print("ERROR: non-interactive session. Re-run with one of:")
+        print("  --skip-setup          use existing VMs")
+        print("  --clear-existing      delete matching VMs then setup")
+        sys.exit(2)
+
+    while True:
+        try:
+            choice = input("Choice [s/c/a]: ").strip().lower()
+        except EOFError:
+            print("\nAborted.")
+            sys.exit(2)
+        if choice in ("s", "skip"):
+            return "skip"
+        if choice in ("c", "clear"):
+            try:
+                confirm = input(
+                    "Type 'yes' to delete '%s' and '%s_*': " % (
+                        base_name, clone_prefix)).strip().lower()
+            except EOFError:
+                print("\nAborted.")
+                sys.exit(2)
+            if confirm == "yes":
+                return "clear"
+            print("  Not confirmed; try again or abort.")
+            continue
+        if choice in ("a", "abort", "q", "quit"):
+            print("Aborted.")
+            sys.exit(2)
+        print("  Enter s, c, or a.")
 
 
 def main(argv=None):
@@ -286,6 +355,9 @@ def main(argv=None):
         parser.error("one of --config/-f or --workload/-w is required "
                      "(unless using --validate)")
 
+    if args.skip_setup and args.clear_existing:
+        parser.error("--skip-setup and --clear-existing cannot be used together")
+
     config_path, tmp_path = _resolve_config(args)
     try:
         print("  Config: %s" % (
@@ -294,34 +366,66 @@ def main(argv=None):
         with open(config_path) as f:
             cfg = json.load(f)
         clone_prefix = _require_clone_prefix(cfg, config_path)
+        base_name = cfg.get("base_vm_name")
+        if not base_name:
+            print("ERROR: config %s is missing required field 'base_vm_name'."
+                  % config_path)
+            sys.exit(2)
 
         from util.cvm import Cvm
         cvm = Cvm(args.cvm)
-        n_vms = cvm.countVmsMatching(clone_prefix)
-        if n_vms == 0:
+        n_clones = cvm.countVmsMatching(clone_prefix)
+        n_base = cvm.countVmsNamed(base_name)
+
+        do_setup = not args.skip_setup
+
+        if n_clones == 0 and n_base == 0:
             if args.skip_setup:
-                print("ERROR: no VMs matching clone_prefix '%s*' found, "
-                      "and --skip-setup was set." % clone_prefix)
+                print("ERROR: no VMs matching base '%s' or clone_prefix '%s_*' "
+                      "found, and --skip-setup was set." % (base_name, clone_prefix))
                 print("  Re-run without --skip-setup so setup can create them:")
                 print("    python3 overhead.py --host %s --config %s"
                       % (args.host, args.config or config_path))
                 sys.exit(1)
-            print("WARNING: no VMs matching clone_prefix '%s*' found — will run setup."
-                  % clone_prefix)
+            print("No existing base/clones for this config — will run setup.")
         else:
-            print("Found %d existing VM(s) matching clone_prefix '%s*'."
-                  % (n_vms, clone_prefix))
-            if args.skip_setup:
-                print("  (--skip-setup: using existing VMs, not recreating)")
-            else:
-                print("  WARNING: setup will still run; existing names may collide."
-                      " Prefer --skip-setup if these VMs are already good.")
+            print("Found existing VMs for this config:")
+            if n_base:
+                print("  base_vm_name '%s': %d" % (base_name, n_base))
+            if n_clones:
+                print("  clone_prefix '%s_*': %d" % (clone_prefix, n_clones))
 
-        if not args.skip_setup:
+            if args.skip_setup:
+                if n_clones == 0:
+                    print("ERROR: --skip-setup set but no clones matching '%s_*'."
+                          % clone_prefix)
+                    sys.exit(1)
+                print("  (--skip-setup: using existing VMs, not recreating)")
+                do_setup = False
+            else:
+                action = _prompt_existing_vms(
+                    base_name, n_base, clone_prefix, n_clones,
+                    clear_existing=args.clear_existing)
+                if action == "skip":
+                    if n_clones == 0:
+                        print("ERROR: cannot skip setup — no clones matching '%s_*'."
+                              % clone_prefix)
+                        sys.exit(1)
+                    do_setup = False
+                    print("Skipping setup; using existing VMs.")
+                else:
+                    print("\nClearing existing base/clones...")
+                    if n_base:
+                        cvm.deleteVmsNamed(base_name)
+                    if n_clones:
+                        cvm.deleteVmsMatchingPrefix(clone_prefix)
+                    do_setup = True
+
+        if do_setup:
             print("\n--- Setup ---")
             run_setup(args.cvm, args.host, config_path)
         else:
-            print("\nSkipping VM setup (--skip-setup).")
+            print("\nSkipping VM setup.")
 
         if args.setup_only:
             print("\nSetup-only mode; skipping experiment.")

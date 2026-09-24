@@ -14,8 +14,6 @@ host_name = ''
 def run(from_unified=False):
     print("setupVms v%s" % VERSION)
     sys.stdout.flush()
-    from util.credentials import prompt_vm_password_once
-    prompt_vm_password_once()
 
     with open(config_file) as f:
         config = json.load(f)
@@ -37,6 +35,33 @@ def run(from_unified=False):
     print("Inventory loaded (%d host(s), %d VM(s))." % (
         len(cvm.getHosts()), len(cvm._vmDic)))
     sys.stdout.flush()
+
+    # Refuse to stack a second setup on top of existing base/clones unless
+    # the user clears them (overhead.py already prompts when from_unified).
+    n_base = cvm.countVmsNamed(base_name)
+    n_clones = cvm.countVmsMatching(clone_prefix)
+    if n_base or n_clones:
+        print("")
+        print("ERROR: existing VMs would collide with setup:")
+        if n_base:
+            print("  base_vm_name '%s': %d" % (base_name, n_base))
+        if n_clones:
+            print("  clone_prefix '%s_*': %d" % (clone_prefix, n_clones))
+        print("")
+        print("  Clear them first, or use the unified CLI:")
+        print("    python3 overhead.py --host %s --config %s --skip-setup"
+              % (host_name, config_file))
+        print("    python3 overhead.py --host %s --config %s --clear-existing"
+              % (host_name, config_file))
+        if not from_unified:
+            print("")
+            print("  Or delete manually, then re-run setupVms:")
+            print("    acli vm.delete %s confirm=true" % base_name)
+            print("    acli vm.delete %s_* confirm=true" % clone_prefix)
+        sys.exit(2)
+
+    from util.credentials import prompt_vm_password_once
+    prompt_vm_password_once()
 
     # Step 1: Ensure disk image exists
     print("Checking disk image...")
@@ -67,12 +92,9 @@ def run(from_unified=False):
     print("Copying SSH key to base VM (so clones inherit passwordless access)...")
     sys.stdout.flush()
     vm_ip = base_vm.getIp()
-    import subprocess
-    from util.credentials import get_vm_password
-    subprocess.run(
-        ["sshpass", "-p", get_vm_password(), "ssh-copy-id", "-o", "StrictHostKeyChecking=no", "root@%s" % vm_ip],
-        check=True
-    )
+    from libx.lib import install_ssh_pubkey
+    key_path = install_ssh_pubkey(vm_ip, user="root")
+    print("  Installed %s on root@%s" % (key_path, vm_ip))
 
     # Step 6: Install workload
     print("Installing workload on base VM...")

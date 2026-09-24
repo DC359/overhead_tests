@@ -62,6 +62,20 @@ class Cvm:
         results = self.parseDetails(vm, 'Consistency Group')
         if not results:
             return {}
+        if len(results) > 1:
+            # Duplicate names (e.g. failed re-create). Prefer the real VM
+            # (has disks / IPs) over an empty shell.
+            def _score(v):
+                try:
+                    disks = int(str(v.get('VDisk Count', '0') or '0').replace(',', ''))
+                except ValueError:
+                    disks = 0
+                ips = 1 if (v.get('VM IP Addresses') or '').strip() else 0
+                return (disks, ips)
+
+            results = sorted(results, key=_score, reverse=True)
+            print("WARNING: %d VMs named '%s'; using uuid %s (delete duplicates)." % (
+                len(results), vmname, results[0].get('Uuid', '?')))
         return results[0]
 
     def getVmDetails(self):
@@ -114,13 +128,30 @@ class Cvm:
             print(e)
 
     def vmCreate(self, name, memory):
+        # cvm_cmd swallows acli failures — check for existing name first so we
+        # never create a second empty VM and keep going.
+        existing = [v for v in (self.getVmDetails() or []) if v.get('Name') == name]
+        if existing:
+            uuids = ', '.join(v.get('Uuid', '?') for v in existing)
+            raise RuntimeError(
+                "VM '%s' already exists (%d): %s. "
+                "Delete it (acli vm.delete <uuid> confirm=true) or use --skip-setup."
+                % (name, len(existing), uuids))
+
+        cmd = "acli vm.create %s memory=%sG num_cores_per_vcpu=2" % (name, memory)
         try:
-            cmd = "acli vm.create %s memory=%sG num_cores_per_vcpu=2" % (name, memory)
-            self.cvm_cmd(cmd)
-            self._vmDic[name] = Vm(name, self)
-            return self._vmDic[name]
+            # Raise on non-zero so a failed create cannot be ignored.
+            if self._cvmip == '':
+                out = shell_run(cmd)
+            else:
+                out = run_remote_cmd(self._cvmip, 'nutanix', cmd)
+            if isinstance(out, bytes):
+                out = out.decode()
         except Exception as e:
             raise RuntimeError("Failed to create VM '%s': %s" % (name, e)) from e
+
+        self._vmDic[name] = Vm(name, self)
+        return self._vmDic[name]
 
     def ensureImage(self, image_name="img"):
         out = self.cvm_cmd("acli image.list")
@@ -200,7 +231,13 @@ class Cvm:
             return 0
 
     def countVmsMatching(self, prefix):
-        """Count VMs whose name starts with clone_prefix from the config."""
+        """Count clone VMs for this config prefix.
+
+        Matches names exactly equal to prefix, or starting with 'prefix_'
+        (e.g. redis_vm_1). Does NOT match a differently named base that only
+        shares a string prefix (e.g. clone_prefix 'dirty_harry' must not
+        count 'dirty_harry_base').
+        """
         try:
             vms = self.getVmDetails()
         except Exception as e:
@@ -209,28 +246,85 @@ class Cvm:
         count = 0
         for vm in vms:
             name = vm.get("Name", "")
-            if name.startswith(prefix):
+            if name == prefix or name.startswith(prefix + "_"):
                 count += 1
         return count
 
+    def listVmsNamed(self, name):
+        """Return ncli detail dicts for VMs with this exact name."""
+        try:
+            vms = self.getVmDetails()
+        except Exception as e:
+            print(e)
+            return []
+        return [vm for vm in (vms or []) if vm.get("Name") == name]
+
+    def countVmsNamed(self, name):
+        """Count VMs with this exact name (detects duplicate base VMs)."""
+        return len(self.listVmsNamed(name))
+
+    def deleteVmsNamed(self, name):
+        """Power off and delete every VM with this exact name (by UUID)."""
+        matched = self.listVmsNamed(name)
+        if not matched:
+            print("  No VMs named '%s' to delete." % name)
+            return 0
+        for vm in matched:
+            uuid = vm.get("Uuid") or ""
+            if not uuid:
+                continue
+            print("  Deleting %s (%s)..." % (name, uuid))
+            self.cvm_cmd("acli vm.off %s" % uuid, quiet=True)
+            out = self.cvm_cmd("acli vm.delete %s confirm=true" % uuid)
+            if out is None:
+                print("    WARNING: delete may have failed for %s" % uuid)
+            # Drop from in-memory map if present
+            if name in self._vmDic and self._vmDic[name].getUuid() == uuid:
+                del self._vmDic[name]
+        return len(matched)
+
+    def deleteVmsMatchingPrefix(self, prefix):
+        """Power off and delete clone VMs for this prefix (prefix / prefix_*)."""
+        n = self.countVmsMatching(prefix)
+        if n == 0:
+            print("  No VMs matching '%s' / '%s_*' to delete." % (prefix, prefix))
+            return 0
+        print("  Deleting %d clone VM(s) matching '%s' / '%s_*'..." % (n, prefix, prefix))
+        # Use prefix_* so we do not also delete base_vm_name like dirty_harry_base
+        # when clone_prefix is dirty_harry.
+        self.cvm_cmd("acli vm.off %s_*" % prefix, quiet=True)
+        self.cvm_cmd("acli vm.delete %s_* confirm=true" % prefix)
+        # Rare: a VM named exactly the prefix
+        self.cvm_cmd("acli vm.off %s" % prefix, quiet=True)
+        self.cvm_cmd("acli vm.delete %s confirm=true" % prefix, quiet=True)
+        for name in list(self._vmDic.keys()):
+            if name == prefix or name.startswith(prefix + "_"):
+                del self._vmDic[name]
+        return n
+
     def countPoweredOnMatching(self, prefix):
-        """Count powered-on VMs whose name starts with clone_prefix.
+        """Count powered-on clone VMs for this config prefix.
         Uses acli (reliable for power state) instead of ncli."""
+        return len(self.listPoweredOnMatching(prefix))
+
+    def listPoweredOnMatching(self, prefix):
+        """Return names of powered-on clone VMs for this config prefix.
+        Matches exact prefix or 'prefix_*'; excludes off/buffer VMs."""
         try:
             cmd = "acli vm.list power_state=on"
             out = self.cvm_cmd(cmd)
             if not out:
-                return 0
+                return []
             lines = out.split("\n") if isinstance(out, str) else out.decode().split("\n")
-            count = 0
+            names = []
             for line in lines:
                 name = line.strip().split()[0] if line.strip() else ""
-                if name.startswith(prefix):
-                    count += 1
-            return count
+                if name == prefix or name.startswith(prefix + "_"):
+                    names.append(name)
+            return names
         except Exception as e:
             print(e)
-            return 0
+            return []
 
     def vmOnAll(self, pattern):
         try:

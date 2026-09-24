@@ -42,6 +42,8 @@ git clone https://github.com/DC359/overhead_tests.git
 cd overhead_tests
 ```
 
+
+
 #### On the UBVM — pack and copy to the CVM
 
 ```bash
@@ -61,6 +63,8 @@ tar xzf overhead_tests.tgz
 cd overhead_tests
 ls
 ```
+
+
 
 ### 3. Python 3
 
@@ -85,8 +89,9 @@ acli host.list
 ### 5. `sshpass`
 
 The script prompts for the base VM root password (or reads `VM_PASSWORD`) and
-uses `sshpass` to seed an SSH key onto the base VM (`ssh-copy-id`). This repo
-does **not** install `sshpass` for you — it must already be available:
+uses `sshpass` to install your local SSH public key onto the base VM (appends
+to `authorized_keys`; does not use `ssh-copy-id`). This repo does **not**
+install `sshpass` for you — it must already be available:
 
 ```bash
 command -v sshpass    # must print a path; if empty, install sshpass before setup
@@ -158,107 +163,115 @@ ran the command (on the CVM if you followed this guide).
 
 ---
 
+
+
 ## Reading results
+
+
 
 ### Output files
 
-| File | What it is |
-|------|------------|
-| Terminal summary (end of run) | Stable averages + top services — start here |
-| `slices_*_runN.csv` | One row per tick × slice (main numbers) |
-| `full_slices_*_runN.csv` | Same ticks with every metric field |
-| `services_*_runN.csv` | Per host service CPU per tick |
-| `events_*_runN.csv` | Wall-clock markers (collection start, VM on/off, …) |
-| `metadata_*_runN.json` | Host / AHV / kernel / QEMU info for that run |
 
-Use **`Phase == stable`** rows for final numbers. Ignore `power_on` / `warmup`
+| File                          | What it is                                          |
+| ----------------------------- | --------------------------------------------------- |
+| Terminal summary (end of run) | Stable averages + top services — start here         |
+| `slices_*_runN.csv`           | One row per tick × slice (main numbers)             |
+| `full_slices_*_runN.csv`      | Same ticks with every metric field                  |
+| `services_*_runN.csv`         | Per host service CPU per tick                       |
+| `events_*_runN.csv`           | Wall-clock markers (collection start, VM on/off, …) |
+| `metadata_*_runN.json`        | Host / AHV / kernel / QEMU info for that run        |
+
+
+Use `Phase == stable` rows for final numbers. Ignore `power_on` / `warmup`
 unless you are debugging boot or ramp-up.
 
 ### Phases (how they are decided)
 
-| Phase | When | How assigned |
-|-------|------|--------------|
-| `baseline` | Test VMs off | From timeline: start → mass power-on |
-| `power_on` | VMs booting / workload check | From timeline: power-on → collecting starts |
-| `warmup` | VMs on, CPU still settling | After collecting starts, until UVMs look settled |
-| `stable` | Steady state | After UVMs settle; used for the printed summary |
 
-**How long collecting runs is fixed before the experiment**, from config:
+| Phase      | When                         | How assigned                                     |
+| ---------- | ---------------------------- | ------------------------------------------------ |
+| `baseline` | Test VMs off                 | From timeline: start → mass power-on             |
+| `power_on` | VMs booting / workload check | From timeline: power-on → collecting starts      |
+| `warmup`   | VMs on, CPU still settling   | After collecting starts, until UVMs look settled |
+| `stable`   | Steady state                 | After UVMs settle; used for the printed summary  |
 
-```text
-collecting time = max_warmup_duration + (stable_ticks × interval)
-```
 
-That full sleep always runs. Settling early does **not** stop the run early.
-`stable_ticks` sizes this window (and the fallback below); it does **not** mean
-“collect only that many stable ticks and exit.”
+**How long collecting runs** (after VMs are on) is set by **`collect_duration`**
+(seconds), or CLI `--duration N`. That is a fixed sleep. Warmup vs stable
+**labels** are decided afterward from the data; they do not shorten the run.
+
+If `collect_duration` is omitted, the legacy formula is used:
+`max_warmup_duration + (stable_ticks × interval)`.
+
+`stable_ticks` is only used for post-run phase labeling (fallback), not for
+sizing the experiment wait.
 
 Warmup vs stable **labels** are decided **after** the run, from
 `ahv-uvms.slice` `x_cores`:
 
 - Compare each tick to the previous one.
 - If the relative change stays below `warmup_threshold_pct` (default **5%**)
-  for `warmup_consecutive` ticks (default **3**), that point becomes the
-  start of `stable`.
+for `warmup_consecutive` ticks (default **3**), that point becomes the
+start of `stable`.
 - **UVMs settle fast:** short `warmup`, then **all remaining** collecting ticks
-  are `stable` (can be more than `stable_ticks`).
+are `stable` (can be more than `stable_ticks`).
 - **UVMs never settle:** fallback — last `stable_ticks` samples → `stable`;
-  earlier collecting ticks → `warmup`.
+earlier collecting ticks → `warmup`.
 
 `baseline_duration` is also a fixed sleep (VMs off). Power-on / guest IP /
 workload check time is variable and is labeled `power_on`.
 
 ### Slices
 
-| Slice | Meaning |
-|-------|---------|
-| `ahv-cvm.slice` | CVM processes on the AHV host |
-| `ahv-uvms.slice` | User / test VMs (guest workload) |
-| `ahv.services` | Host services under `system.slice` (libvirt, networking, …) |
-| `other` | Tasks not in the three buckets above |
+
+| Slice            | Meaning                                                     |
+| ---------------- | ----------------------------------------------------------- |
+| `ahv-cvm.slice`  | CVM processes on the AHV host                               |
+| `ahv-uvms.slice` | User / test VMs (guest workload)                            |
+| `ahv.services`   | Host services under `system.slice` (libvirt, networking, …) |
+| `other`          | Tasks not in the three buckets above                        |
+
+
+
 
 ### Fields (brief)
 
 Common columns in `slices_*.csv` / terminal:
 
-| Field | Meaning |
-|-------|---------|
-| `x_cores` | Running CPU, as cores (main “how much CPU?” number) |
-| `y_cores` | Runnable but waiting (run-queue), as cores |
-| `xy_cores` | `x_cores + y_cores` |
-| `Demand_s` | Estimated CPU time wanted in the tick (seconds) |
-| `Supply_s` | CPU time actually received (seconds) |
-| `VM_Count` | Powered-on test VMs when the tick was labeled |
+
+| Field      | Meaning                                             |
+| ---------- | --------------------------------------------------- |
+| `x_cores`  | Running CPU, as cores (main “how much CPU?” number) |
+| `y_cores`  | Runnable but waiting (run-queue), as cores          |
+| `xy_cores` | `x_cores + y_cores`                                 |
+| `Demand_s` | Estimated CPU time wanted in the tick (seconds)     |
+| `Supply_s` | CPU time actually received (seconds)                |
+| `VM_Count` | Powered-on test VMs when the tick was labeled       |
+
 
 In `full_slices_*.csv` (nanoseconds unless noted):
 
-| Field | Meaning |
-|-------|---------|
-| `X` | Run time in the tick |
-| `Y` | Wait / run-queue time in the tick |
-| `Z` | Idle-ish remainder of task time budget in the tick |
-| `T` | Task-time budget for the tick (`interval × task count`) |
-| `Supply` | Same idea as supply (= `X`) |
-| `Demand` | Supply plus an estimate of unmet wait |
-| `DemandSupplyRatio` | Demand relative to supply (scaled integer %) |
-| `tasks_count` / `counted_tids` | How many tasks were seen |
-| `pct_running_x` / `pct_readyq_y` | X / Y as % of `T` |
-| `pct_contention` | Wait share of (run + wait) |
-| `pct_cpu_util` | Run time vs host CPU budget for the interval |
-| `fractional` / `fractional_pct_supply` | Wait credited into Demand |
-| `pct_chg_X/Y/Z` | % change vs previous tick |
-| `ephemeral_*` / `total_x_cores` | Short-lived tasks (schedstat path); may be empty for bpfsnap |
 
-**Demand vs Supply:** nearly equal → little starvation. Demand much larger →
+| Field                                  | Meaning                                                      |
+| -------------------------------------- | ------------------------------------------------------------ |
+| `X`                                    | Run time in the tick                                         |
+| `Y`                                    | Wait / run-queue time in the tick                            |
+| `Z`                                    | Idle-ish remainder of task time budget in the tick           |
+| `T`                                    | Task-time budget for the tick (`interval × task count`)      |
+| `Supply`                               | Same idea as supply (= `X`)                                  |
+| `Demand`                               | Supply plus an estimate of unmet wait                        |
+| `DemandSupplyRatio`                    | Demand relative to supply (scaled integer %)                 |
+| `tasks_count` / `counted_tids`         | How many tasks were seen                                     |
+| `pct_running_x` / `pct_readyq_y`       | X / Y as % of `T`                                            |
+| `pct_contention`                       | Wait share of (run + wait)                                   |
+| `pct_cpu_util`                         | Run time vs host CPU budget for the interval                 |
+| `fractional` / `fractional_pct_supply` | Wait credited into Demand                                    |
+| `pct_chg_X/Y/Z`                        | % change vs previous tick                                    |
+| `ephemeral_*` / `total_x_cores`        | Short-lived tasks (schedstat path); may be empty for bpfsnap |
+
+
+**Demand vs Supply:** nearly equal → little starvation. Demand much larger →  
 CPU pressure. Cores ≈ `Demand_s / interval` or `Supply_s / interval`.
-
-### How to read a run
-
-1. Check terminal **Stable phase summary** for the three main slices.
-2. Check **Top services** if you care which host service is costly.
-3. In CSV, filter `Phase == stable`; compare runs with the same VM count and config.
-4. Optional: compare stable to `baseline` rows to see how much host/CVM cost
-   rose when VMs were on (the tool does not print that delta automatically).
 
 ---
 
@@ -273,8 +286,6 @@ If not on the CVM, add `-i <cvm_ip>` to both.
 
 ---
 
-
-
 ## Configuration
 
 Configs live in `sample/`. Important fields:
@@ -288,7 +299,8 @@ Configs live in `sample/`. Important fields:
 | `workload.type`                        | `redis`, `fio`, or `dirtyHarry`                                                 |
 | `interval`                             | Sample interval (seconds)                                                       |
 | `baseline_duration`                    | Time with test VMs off before power-on                                          |
-| `stable_ticks` / `max_warmup_duration` | Collection length after power-on                                                |
+| `collect_duration`                     | **Total** collect time (seconds) after VMs are on; or use `--duration`          |
+| `stable_ticks` / `max_warmup_duration` | Legacy timing if `collect_duration` omitted; `stable_ticks` still used for labels |
 | `collector`                            | `bpfsnap` (default) or `schedstat`                                              |
 | `num_runs`                             | Default **3**                                                                   |
 

@@ -2,6 +2,7 @@
     "vm_size_gb": 5,
     "interval": 30,
     "baseline_duration": 30,
+    "collect_duration": 480,
     "stable_ticks": 16,
     "warmup_threshold_pct": 5,
     "warmup_consecutive": 3,

@@ -1,21 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
+// Userspace driver for the BPF snapshot collector.
 //
-// schedstat_snap.c — userspace driver for the BPF snapshot+exit collector.
-//
-// Usage:
-//   schedstat_snap <interval_s> <outfile> <pidfile> \
-//                  <cvm_cg_path> <uvms_cg_path> <sys_cg_path> <service_parent>
-//
-// Every <interval_s> seconds it:
-//   1) triggers the iter/task sweep (kernel adds each live thread's delta),
-//   2) reads + sums the per-CPU scoreboards (agg_slice, agg_svc),
-//   3) resolves service cgroup ids -> names by scanning <service_parent>,
-//   4) writes one TICK block to <outfile> in the aggregated format the Python
-//      collector parses, then
-//   5) wipes the scoreboards for the next round.
-//
-// All per-thread accounting happens in the kernel; only the small scoreboards
-// cross to userspace.
+// Each interval it triggers a sweep of live threads, reads the slice and
+// service aggregates, writes one TICK block, and clears the aggregates.
+// Thread exits are accounted asynchronously by the kernel exit hook.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE  // name_to_handle_at, struct file_handle, localtime_r
@@ -39,7 +26,7 @@
 
 #include "schedstat_snap.skel.h"
 
-// name_to_handle_at file handle wrapper big enough for any fs handle.
+// Storage for the file handle returned by name_to_handle_at().
 struct cg_handle {
     struct file_handle fh;
     unsigned char data[128];
