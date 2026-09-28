@@ -7,10 +7,10 @@ bpftrace with a single in-kernel BPF program:
     per-thread baseline kept in a kernel map), and
   * a sched_process_exit hook accounts threads that DIE between sweeps.
 
-Both accumulate per-slice / per-service run+wait totals into per-CPU kernel maps;
-userspace only copies the small scoreboards once per tick. This captures
-long-running, newborn, dying and ephemeral threads with no per-event streaming
-(so nothing can be "lost").
+Both accumulate per-slice / per-service / per-UVM run+wait totals into per-CPU
+kernel maps; userspace only copies the small scoreboards once per tick. This
+captures long-running, newborn, dying and ephemeral threads with no per-event
+streaming (so nothing can be "lost").
 
 It emits the same per-tick `tick_result` structure as schedstatCollector, so the
 existing csvDump / terminalDump consume it unchanged. Select it via
@@ -74,16 +74,19 @@ def parse_snap_results(content):
         TICK <n> <ts_start> <ts_end> <interval_s> MONO=<ns>
         SLICE <name> <run_ns> <wait_ns> <count>
         SERVICE <name> <run_ns> <wait_ns> <count>
+        UVM <uuid> <run_ns> <wait_ns> <count>
         END_TICK
 
     Returns a list of dicts:
         {tick, ts_start, ts_end, interval_s, mono_ns,
          slices: {name: (run, wait, count)},
-         services: {name: (run, wait, count)}}
+         services: {name: (run, wait, count)},
+         uvms: {uuid: (run, wait, count)}}
     """
     ticks = []
     cur = None
     lines = content.split("\n") if isinstance(content, str) else content.decode().split("\n")
+    kind_to_key = {"SLICE": "slices", "SERVICE": "services", "UVM": "uvms"}
     for line in lines:
         parts = line.strip().split()
         if not parts:
@@ -105,6 +108,7 @@ def parse_snap_results(content):
                     "mono_ns": mono_ns,
                     "slices": {},
                     "services": {},
+                    "uvms": {},
                 }
             except ValueError:
                 cur = None
@@ -112,13 +116,12 @@ def parse_snap_results(content):
             if cur is not None:
                 ticks.append(cur)
             cur = None
-        elif cur is not None and parts[0] in ("SLICE", "SERVICE") and len(parts) >= 5:
+        elif cur is not None and parts[0] in kind_to_key and len(parts) >= 5:
             try:
                 run = int(parts[2]); wait = int(parts[3]); count = int(parts[4])
             except ValueError:
                 continue
-            key = "slices" if parts[0] == "SLICE" else "services"
-            cur[key][parts[1]] = (run, wait, count)
+            cur[kind_to_key[parts[0]]][parts[1]] = (run, wait, count)
     return ticks
 
 
@@ -452,6 +455,7 @@ class bpfSnapCollector(StatsCollectorTmpl):
                 "time_delta": "%ds" % (idx * interval) if idx > 0 else "0s",
                 "slices": {},
                 "per_service": {},
+                "per_uvm": {},
                 "cpustat_xcores": {},
                 "mono_ns_start": rt["mono_ns"],
                 "mono_ns_end": 0,
@@ -476,6 +480,10 @@ class bpfSnapCollector(StatsCollectorTmpl):
 
             for svc_name, (run, wait, count) in rt["services"].items():
                 tick_result["per_service"][svc_name] = _build_metrics(
+                    run, wait, count, self._num_cpus, interval, count)
+
+            for uvm_uuid, (run, wait, count) in rt.get("uvms", {}).items():
+                tick_result["per_uvm"][uvm_uuid] = _build_metrics(
                     run, wait, count, self._num_cpus, interval, count)
 
             all_tick_results.append(tick_result)

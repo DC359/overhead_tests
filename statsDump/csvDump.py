@@ -104,6 +104,31 @@ class csvDump(StatsDumpTmpl):
                     w.writerow(row)
         print("Services CSV saved to %s" % services_file)
 
+        uvms_file = os.path.join(outdir, "uvms%s_run%d.csv" % (host_suffix, run_num))
+        with open(uvms_file, "w") as f:
+            w = csv.writer(f)
+            _write_meta_comments(w, title)
+            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "Phase", "UVM_UUID",
+                         "x_cores", "y_cores", "xy_cores", "Demand_s", "Supply_s",
+                         "tasks_count"])
+            for tick in stats:
+                for uvm_uuid, metrics in tick.get("per_uvm", {}).items():
+                    row = [
+                        tick.get("wall_clock", ""),
+                        tick["time_delta"],
+                        tick.get("vm_count", vm_count),
+                        tick.get("phase", ""),
+                        uvm_uuid,
+                        metrics.get("x_cores", ""),
+                        metrics.get("y_cores", ""),
+                        metrics.get("xy_cores", ""),
+                        ns_to_sec(metrics.get("Demand", 0)),
+                        ns_to_sec(metrics.get("Supply", 0)),
+                        metrics.get("tasks_count", ""),
+                    ]
+                    w.writerow(row)
+        print("UVMs CSV saved to %s" % uvms_file)
+
         events = title.get("events", [])
         event_map = {}
         for ts, label in events:

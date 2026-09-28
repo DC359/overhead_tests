@@ -10,7 +10,8 @@
 //      (final - last), and deletes them from the baseline book.
 // Together these account for long-running, newborn, dying and ephemeral threads
 // without ever streaming per-thread data to userspace — only the small
-// per-slice / per-service scoreboards (agg_slice, agg_svc) cross the boundary.
+// per-slice / per-service / per-UVM scoreboards (agg_slice, agg_svc, agg_uvm)
+// cross the boundary.
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -27,11 +28,14 @@ char LICENSE[] SEC("license") = "GPL";
 #define N_SLICE_BUCKETS 4
 
 // system.slice sits at cgroup level 1; ahv-cvm/ahv-uvms sit at level 2 under
-// ahv.slice (level 1). These depths are fixed by the AHV cgroup layout. The
-// ancestor at a fixed level is a single array read — no parent-walk loop — so a
-// thread can be buried arbitrarily deep and still be classified correctly.
+// ahv.slice (level 1). Individual UVM machine-*.scope cgroups sit at level 4
+// (ahv.slice / ahv-uvms.slice / ahv-uvms-{fixed,memoc}.slice / machine-*.scope).
+// These depths are fixed by the AHV cgroup layout. The ancestor at a fixed
+// level is a single array read — no parent-walk loop — so a thread can be
+// buried arbitrarily deep and still be classified correctly.
 #define SYS_LEVEL   1
 #define SLICE_LEVEL 2
+#define VM_LEVEL    4
 
 // Slice cgroup ids, filled in by userspace (via name_to_handle_at) before load.
 const volatile __u64 cvm_id  = 0;
@@ -75,6 +79,15 @@ struct {
     __type(value, struct accum);
 } agg_svc SEC(".maps");
 
+// Per-UVM scoreboard, keyed by the machine-*.scope cgroup id at VM_LEVEL under
+// ahv-uvms.slice. Userspace maps id -> UUID.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u64);
+    __type(value, struct accum);
+} agg_uvm SEC(".maps");
+
 static __always_inline void add_slice(__u32 bucket, __u64 run, __u64 wait)
 {
     struct accum *a = bpf_map_lookup_elem(&agg_slice, &bucket);
@@ -98,13 +111,29 @@ static __always_inline void add_svc(__u64 id, __u64 run, __u64 wait)
     }
 }
 
-// Resolve which slice (and, for system.slice, which service) a task belongs to.
-// Reads the kernel's ready-made ancestor array at fixed levels; no loop.
+static __always_inline void add_uvm(__u64 id, __u64 run, __u64 wait)
+{
+    struct accum *a = bpf_map_lookup_elem(&agg_uvm, &id);
+    if (a) {
+        a->run += run;
+        a->wait += wait;
+        a->count += 1;
+    } else {
+        struct accum n = { .run = run, .wait = wait, .count = 1 };
+        bpf_map_update_elem(&agg_uvm, &id, &n, BPF_ANY);
+    }
+}
+
+// Resolve which slice (and, for system.slice / ahv-uvms, which unit) a task
+// belongs to. Reads the kernel's ready-made ancestor array at fixed levels;
+// no loop.
 static __always_inline void classify(struct task_struct *task,
-                                     __u32 *bucket, __u64 *svc_id)
+                                     __u32 *bucket, __u64 *svc_id,
+                                     __u64 *uvm_id)
 {
     *bucket = BUCKET_OTHER;
     *svc_id = 0;
+    *uvm_id = 0;
 
     struct cgroup *cg = BPF_CORE_READ(task, cgroups, dfl_cgrp);
     if (!cg)
@@ -138,6 +167,9 @@ static __always_inline void classify(struct task_struct *task,
     }
     if (uvms_id != 0 && id_slice == uvms_id) {
         *bucket = BUCKET_UVMS;
+        // UVM machine scope is two levels deeper than ahv-uvms.slice.
+        if (level >= VM_LEVEL)
+            *uvm_id = BPF_CORE_READ(cg, ancestors[VM_LEVEL], kn, id);
         return;
     }
 }
@@ -165,11 +197,14 @@ static __always_inline void account(struct task_struct *task, int is_exit)
 
     __u32 bucket;
     __u64 svc_id;
-    classify(task, &bucket, &svc_id);
+    __u64 uvm_id;
+    classify(task, &bucket, &svc_id, &uvm_id);
 
     add_slice(bucket, drun, dwait);
     if (bucket == BUCKET_SERVICES && svc_id != 0)
         add_svc(svc_id, drun, dwait);
+    if (bucket == BUCKET_UVMS && uvm_id != 0)
+        add_uvm(uvm_id, drun, dwait);
 
     if (is_exit) {
         bpf_map_delete_elem(&last, &tid);

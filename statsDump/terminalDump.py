@@ -5,6 +5,7 @@ import math
 SLICE_NAMES = ["ahv-cvm.slice", "ahv-uvms.slice", "ahv.services"]
 
 TOP_SERVICES_COUNT = 10
+TOP_UVMS_COUNT = 10
 
 
 def fmt_ns_to_sec(val):
@@ -67,6 +68,31 @@ class terminalDump(StatsDumpTmpl):
                 print("-" * 52)
                 for svc_name, avg in top:
                     print("%-40s %10.2f" % (svc_name, avg))
+
+        # --- Top UVMs (averaged over stable ticks) ---
+        stable_uvm = {}
+        for tick in stats:
+            if tick.get("phase") != "stable":
+                continue
+            for uvm_uuid, m in tick.get("per_uvm", {}).items():
+                xc = m.get("x_cores")
+                if isinstance(xc, (int, float)):
+                    stable_uvm.setdefault(uvm_uuid, []).append(float(xc))
+
+        if stable_uvm:
+            uvm_avg = []
+            for uvm_uuid, vals in stable_uvm.items():
+                avg = sum(vals) / len(vals)
+                if avg >= 0.005:
+                    uvm_avg.append((uvm_uuid, avg))
+            uvm_avg.sort(key=lambda x: -x[1])
+            top = uvm_avg[:TOP_UVMS_COUNT]
+            if top:
+                print("\n--- Top %d UVMs by x_cores (stable avg) ---" % min(TOP_UVMS_COUNT, len(top)))
+                print("%-40s %10s" % ("UVM_UUID", "x_cores"))
+                print("-" * 52)
+                for uvm_uuid, avg in top:
+                    print("%-40s %10.2f" % (uvm_uuid, avg))
 
         # --- Stable phase summary ---
         stable_ticks = [t for t in stats if t.get("phase") == "stable"]
