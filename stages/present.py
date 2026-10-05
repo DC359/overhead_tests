@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Parse log, tag vms_off/vms_on, print/save results
 """Present stage — VERSION 0.1.0
 
 Parse cgroup_cpu_snap keyed raw logs, map slice names, tag ticks
