@@ -22,3 +22,4 @@ vmlinux.h
 
 # One-off Exp A/B/C backup + rebuild tarball (do not commit)
 .exp_abc_backup/
+
