@@ -1,3 +1,4 @@
+# redis guest installer
 from infra.objtmpl import WorkloadTmpl
 from infra.ssh import scp_add_file
 import time
