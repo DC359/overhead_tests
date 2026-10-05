@@ -1,3 +1,4 @@
+# Print results summary
 from infra.objtmpl import StatsDumpTmpl
 from infra.host_meta import format_metadata_lines
 import math
