@@ -1,3 +1,4 @@
+# Workload class lookup
 from workloads.dirty_harry import dirtyHarry
 from workloads.fio import fioWorkload
 from workloads.redis import redisWorkload
