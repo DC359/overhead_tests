@@ -1,4 +1,5 @@
 {
+    "description": "Short redis first run",
     "vm_size_gb": 5,
     "interval": 10,
     "baseline_duration": 15,
