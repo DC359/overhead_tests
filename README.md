@@ -246,41 +246,15 @@ at setup/collect time. Rebuild notes: `bin/README.md`.
 
 ## Layout
 
-
-| Path | Description |
-| --- | --- |
-| `orchestrator.py` | CLI: setup → validate → collect → present |
-| `stages/` | The four experiment stages |
-| `bin/cgroup_cpu_snap` | Host CPU collector binary |
-| `configs/` | Experiment JSON (workload, VMs, timings) |
-| `infra/` | CVM, AHV host, VM, and SSH helpers |
-| `workloads/` | Guest workload installers (redis / fio / dirtyHarry) |
-| `statsDump/` | Terminal summary and CSV writers |
-| `README.md` | How to run the experiment |
-
-
-**Stages**
-
-| Path | Description |
-| --- | --- |
-| `stages/validate.py` | CVM/AHV connectivity and host metadata |
-| `stages/setup.py` | Create base VM, install workload, clone, deploy collector |
-| `stages/collect.py` | Power on, sample with `cgroup_cpu_snap`, power off |
-| `stages/present.py` | Parse log, tag `vms_off`/`vms_on`, print/save results |
-
-
-**Configs** (`configs/`)
-
-| File | Description |
-| --- | --- |
-| `test_quick.json` | Short redis first run |
-| `redis.json` | Full redis |
-| `redis_char.json` | Redis, finer sample interval |
-| `test.json` | dirtyHarry fleet |
-| `test_fio.json` | fio randread |
-| `fio_smallvm.json` | fio, 3 GB VMs |
-| `fio_randrw.json` | fio randrw |
-| `fio_highjobs.json` | fio, 32 jobs |
+```text
+orchestrator.py       # public CLI
+stages/               # setup, validate, collect, present
+bin/cgroup_cpu_snap   # vendored eBPF collector
+configs/              # experiment JSON
+infra/                # CVM / host / VM / SSH helpers
+workloads/            # guest workload installers
+statsDump/            # terminal + CSV
+```
 
 ---
 
