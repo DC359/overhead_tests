@@ -1,3 +1,4 @@
+# Ignore results, secrets, and local scratch
 *.pyc
 results_*/
 
