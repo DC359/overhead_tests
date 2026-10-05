@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# CLI: setup → validate → collect → present
 """
 Orchestrator for AHV overhead experiments (v0.1.0).
 
