@@ -1,5 +1,5 @@
-from libx.objtmpl import StatsDumpTmpl
-from util.host_meta import format_metadata_lines
+from infra.objtmpl import StatsDumpTmpl
+from infra.host_meta import format_metadata_lines
 import math
 
 SLICE_NAMES = ["ahv-cvm.slice", "ahv-uvms.slice", "ahv.services"]
@@ -42,71 +42,69 @@ class terminalDump(StatsDumpTmpl):
             print("  %s" % line)
         print("=" * 90)
 
-        # --- Top offending services (averaged over stable ticks) ---
-        stable_svc = {}
-        stable_count = 0
+        # --- Top services (averaged over vms_on ticks) ---
+        on_svc = {}
         for tick in stats:
-            if tick.get("phase") != "stable":
+            if tick.get("vm_state") != "vms_on":
                 continue
-            stable_count += 1
             for svc_name, m in tick.get("per_service", {}).items():
-                xc = m.get("x_cores")
+                xc = m.get("execution_cores")
                 if isinstance(xc, (int, float)):
-                    stable_svc.setdefault(svc_name, []).append(float(xc))
+                    on_svc.setdefault(svc_name, []).append(float(xc))
 
-        if stable_svc:
+        if on_svc:
             svc_avg = []
-            for svc_name, vals in stable_svc.items():
+            for svc_name, vals in on_svc.items():
                 avg = sum(vals) / len(vals)
                 if avg >= 0.005:
                     svc_avg.append((svc_name, avg))
             svc_avg.sort(key=lambda x: -x[1])
             top = svc_avg[:TOP_SERVICES_COUNT]
             if top:
-                print("\n--- Top %d services by x_cores (stable avg) ---" % min(TOP_SERVICES_COUNT, len(top)))
-                print("%-40s %10s" % ("Service", "x_cores"))
+                print("\n--- Top %d services by execution_cores (vms_on avg) ---" % min(TOP_SERVICES_COUNT, len(top)))
+                print("%-40s %10s" % ("Service", "execution_cores"))
                 print("-" * 52)
                 for svc_name, avg in top:
                     print("%-40s %10.2f" % (svc_name, avg))
 
-        # --- Top UVMs (averaged over stable ticks) ---
-        stable_uvm = {}
+        # --- Top UVMs (averaged over vms_on ticks) ---
+        on_uvm = {}
         for tick in stats:
-            if tick.get("phase") != "stable":
+            if tick.get("vm_state") != "vms_on":
                 continue
             for uvm_uuid, m in tick.get("per_uvm", {}).items():
-                xc = m.get("x_cores")
+                xc = m.get("execution_cores")
                 if isinstance(xc, (int, float)):
-                    stable_uvm.setdefault(uvm_uuid, []).append(float(xc))
+                    on_uvm.setdefault(uvm_uuid, []).append(float(xc))
 
-        if stable_uvm:
+        if on_uvm:
             uvm_avg = []
-            for uvm_uuid, vals in stable_uvm.items():
+            for uvm_uuid, vals in on_uvm.items():
                 avg = sum(vals) / len(vals)
                 if avg >= 0.005:
                     uvm_avg.append((uvm_uuid, avg))
             uvm_avg.sort(key=lambda x: -x[1])
             top = uvm_avg[:TOP_UVMS_COUNT]
             if top:
-                print("\n--- Top %d UVMs by x_cores (stable avg) ---" % min(TOP_UVMS_COUNT, len(top)))
-                print("%-40s %10s" % ("UVM_UUID", "x_cores"))
+                print("\n--- Top %d UVMs by execution_cores (vms_on avg) ---" % min(TOP_UVMS_COUNT, len(top)))
+                print("%-40s %10s" % ("UVM_UUID", "execution_cores"))
                 print("-" * 52)
                 for uvm_uuid, avg in top:
                     print("%-40s %10.2f" % (uvm_uuid, avg))
 
-        # --- Stable phase summary ---
-        stable_ticks = [t for t in stats if t.get("phase") == "stable"]
-        if stable_ticks:
-            print("\n--- Stable phase summary (mean ± stdev) ---")
-            print("%-18s %12s %12s %12s %6s" % ("Slice", "x_cores", "Demand(s)", "Supply(s)", "n"))
+        # --- vms_on summary ---
+        on_ticks = [t for t in stats if t.get("vm_state") == "vms_on"]
+        if on_ticks:
+            print("\n--- VMs on summary (mean ± stdev) ---")
+            print("%-18s %12s %12s %12s %6s" % ("Slice", "execution_cores", "Demand(s)", "Supply(s)", "n"))
             for name in SLICE_NAMES:
                 xs, ds, ss = [], [], []
-                for tick in stable_ticks:
+                for tick in on_ticks:
                     m = tick.get("slices", {}).get(name, {})
                     if not m:
                         continue
-                    if isinstance(m.get("x_cores"), (int, float)):
-                        xs.append(float(m["x_cores"]))
+                    if isinstance(m.get("execution_cores"), (int, float)):
+                        xs.append(float(m["execution_cores"]))
                     if isinstance(m.get("Demand"), (int, float)):
                         ds.append(m["Demand"] / 1e9)
                     if isinstance(m.get("Supply"), (int, float)):
@@ -119,6 +117,6 @@ class terminalDump(StatsDumpTmpl):
                 print("%-18s %6.2f±%-4.2f %6.2f±%-4.2f %6.2f±%-4.2f %6d" % (
                     name, xm, xsdev, dm, dsdev, sm, ssdev, len(xs)))
         else:
-            print("\n[WARNING] No stable ticks recorded — cannot produce summary.")
+            print("\n[WARNING] No vms_on ticks recorded — cannot produce summary.")
 
         print("\n" + "=" * 90)

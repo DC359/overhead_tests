@@ -1,342 +1,269 @@
 # overhead-tests
 
-Measure AHV host CPU overhead while a fleet of user VMs (UVMs) run a workload.
+This tools measures, the CPU footprint of CVM , different services and UVMs in different scenarios. We run a fleet of UVMs with different workloads running on them while measuring how much **AHV host CPU** it costs.
 
-The tool estimates how many VMs fit in free host memory (each sized by
-`vm_size_gb` in the config), creates that many clones, powers them on together,
-and records CPU time in host cgroups (`ahv-cvm.slice`, `ahv-uvms.slice`,
-`ahv.services`, …). VM size, clone headroom, timing, workload, and collector are
-all configurable in JSON under `sample/`.
+How does the experiment run?
+
+1. **Setup** (unless skipped) : creates one base VM, installs workload on it, clones it and deploys `cgroup_cpu_snap` to the AHV host and swtiches all UVMs off after setup is completed.
+2. **Collect :** Once collection script starts, we mass power on the UVMs and sample while on and after certain fixed time, and powers all the UVMs back off. We can run this experiment any number of times (default `num_runs` is 3 unless the config or `--runs` says otherwise) we dont need to run setup after first run.
+3. **Present** — After the experiments are run, we fetch the log, print summary, and the final results at write `results_*/` .
+
+One CLI runs the full path: A JSON config chooses the workload, VM names, and timings
+
+```bash
+python3 orchestrator.py --host <ahv_host> --config configs/<file>.json
+```
 
 ---
 
-## Prerequisites
-
-Complete these before the first run.
-
-### 1. Use a one-node test cluster
+## Before you start
 
 Use a **one-node test cluster** you are allowed to fill with clones.
-
-This tool creates many VMs (enough to consume free host memory) and may
-delete leftover test VMs. Do **not** run it on a shared or production cluster.
+Do **not** run this on shared or production clusters.
 
 You need:
 
-- CVM IP (example: `10.117.24.167`)
-- AHV host name from `acli host.list` (example: `Berwick02-4`)
+- CVM IP  (example: `10.117.24.167`)
+- AHV host name  from `acli host.list` (example: `Berwick02-4`)
+- Python 3 and `sshpass` on the CVM (setup installs an SSH key into guests)
 
+```bash
+python3 --version
+command -v sshpass
+```
 
+Setup downloads redis / fio / dirtyHarry from an internal Nutanix mirror into
+the guest. The guest must reach that mirror; if not, setup fails when it tries
+to download.
 
-### 2. Get the code onto the CVM (recommended path)
+---
 
-Since CVMs dont allow for direct cloning of repos from github, we clone the repo in our UBVM/local machine and scp it to cvm, to run it from there
+## Get the code onto the CVM
 
-#### On the UBVM — clone
+CVMs usually cannot clone from GitHub. Pack from your laptop/UBVM and copy.
 
-Clone from github repo:
+**On the laptop / UBVM:**
 
 ```bash
 cd ~
-git clone https://github.com/DC359/overhead_tests.git
-cd overhead_tests
+tar czf overhead_tests.tgz overhead-tests
+scp -O overhead_tests.tgz nutanix@<cvm_ip>:/home/nutanix/
 ```
 
+(`-O` = legacy SCP; needed on many CVMs.)
 
-
-#### On the UBVM — pack and copy to the CVM
-
-```bash
-cd ~
-tar czf overhead_tests.tgz overhead_tests
-scp overhead_tests.tgz nutanix@<cvm_ip>:/home/nutanix
-```
-
-Enter the CVM `nutanix` password if asked.
-
-#### On the CVM — unpack and open the repo
+**On the CVM:**
 
 ```bash
 ssh nutanix@<cvm_ip>
-cd /home/nutanix/tmp
+cd ~
 tar xzf overhead_tests.tgz
-cd overhead_tests
-ls
+cd overhead-tests
+
+##verify if succesfully unpacked
+ls orchestrator.py bin/cgroup_cpu_snap
 ```
 
+---
 
+## Run (on the CVM)
 
-### 3. Python 3
-
-On the machine where you run the tool (normally the CVM):
-
-```bash
-python3 --version    # expect Python 3.x
-```
-
-
-
-### 4. Cluster access
-
-On the CVM, confirm the host name:
-
-```bash
-acli host.list
-```
-
-
-
-### 5. `sshpass`
-
-The script prompts for the base VM root password (or reads `VM_PASSWORD`) and
-uses `sshpass` to install your local SSH public key onto the base VM (appends
-to `authorized_keys`; does not use `ssh-copy-id`). This repo does **not**
-install `sshpass` for you — it must already be available:
-
-```bash
-command -v sshpass    # must print a path; if empty, install sshpass before setup
-```
-
-
-
-### 6. Workload binaries
-
-Prebuilt **redis / fio / dirtyHarry** binaries are hosted on an internal  
-Nutanix mirror (URLs at the top of each file in `workload/`). Setup downloads  
-them into the guest automatically. You do not install those packages by hand;  
-the guest must be able to reach that mirror on the network.
-
-## Quick start (on the CVM)
-
-After unpacking under `/home/nutanix/overhead_tests` (or your chosen path), `cd` into the repo. Replace `<ahv_host>` with a name from `acli host.list`.
 Do **not** pass `--cvm` when you are already on the CVM.
+Replace `<ahv_host>` with a name from `acli host.list`.
 
-### 1. Validate connectivity
+### 1. Validate
 
-```bash
-# Confirms CVM acli and SSH to the AHV host; creates no VMs
-python3 overhead.py --host <ahv_host> --validate
-```
-
-
-
-### 2. Small try run
+Checks CVM inventory, acli, SSH to AHV, host metadata, and the collector
+binary. No VMs created, no measurement.
 
 ```bash
-# Short smoke test: setup (if needed) + brief experiment
-python3 overhead.py --host <ahv_host> --config sample/test_quick.json
+python3 orchestrator.py --host <ahv_host> --validate
 ```
 
+### 2. First experiment
+
+**Short redis** (good first proof; same fleet names as full redis):
+
+```bash
+python3 orchestrator.py --host <ahv_host> --config configs/test_quick.json
+```
+
+**Or full redis** (longer collect, more runs):
+
+```bash
+python3 orchestrator.py --host <ahv_host> --config configs/redis.json
+```
+
+If matching VMs already exist, the tool prompts: reuse / clear+recreate / abort.
+
+### 3. Measure again (same fleet)
+
+Only after a successful setup for **that same config**:
+
+```bash
+python3 orchestrator.py --host <ahv_host> \
+  --config configs/test_quick.json --skip-setup --runs 1
+```
+
+Use the same `--config` as the fleet you built (`test_quick` and `redis` share
+`redis_base` / `redis_vm_*`, so either works against that redis fleet).
+
+Results go under `results_YYYYMMDD_HHMMSS/` in the current directory.
+
+### Useful flags
 
 
-### 3. Clear VMs before another workload or a clean full run
+| Flag               | Meaning                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| `--validate`       | Connectivity + metadata only                               |
+| `--setup-only`     | Setup (+ deploy collector); no experiment                  |
+| `--skip-setup`     | Use existing clones for this config                        |
+| `--clear-existing` | Delete matching base/clones, then setup                    |
+| `--runs N`         | Override `num_runs`                                        |
+| `--duration N`     | Override `collect_duration` (seconds after workload check) |
+| `--interval N`     | Override sample interval                                   |
+| `--host-verify`    | Also run cgtop/mpstat/sar during collect                   |
+| `--version`        | Print CLI version                                          |
 
-On a **one-node test cluster**, clear leftover VMs so the next run starts clean:
+
+---
+
+## Read the results
+
+**Start with the terminal summary** — slice means and top services/UVMs over
+`vms_on` ticks.
+
+Then open CSVs under `results_*/` and filter on `VM_State == vms_on`.
+
+
+| File                     | What it is                            |
+| ------------------------ | ------------------------------------- |
+| Terminal summary         | `vms_on` averages + top services/UVMs |
+| `slices_*_runN.csv`      | Per tick × slice                      |
+| `full_slices_*_runN.csv` | Same ticks, full metric fields        |
+| `services_*_runN.csv`    | Per host service                      |
+| `uvms_*_runN.csv`        | Per UVM                               |
+| `events_*_runN.csv`      | Exact event times                     |
+| `metadata_*_runN.json`   | Host / AHV / kernel / QEMU            |
+
+
+
+
+### What `vms_off` / `vms_on` mean
+
+During a run:
+
+1. VMs stay **off** for `baseline_duration`
+2. Mass **power-on** + soft workload check (up to ~60s)
+3. Keep sampling for `collect_duration`
+4. Power **off** again
+
+Each sample tick is tagged from its **start** time vs the power-on command:
+
+To caluclate averages shown in terminal summary we only use `vms_on` **ticks**.
+Events mark exact times: `vms_on_cmd_sent`, `measure_started` (when
+`collect_duration` begins), `collection_ended`, `vms_off_cmd_sent`.
+
+### Details (slices and fields)
+
+
+| Slice            | Meaning                            |
+| ---------------- | ---------------------------------- |
+| `ahv-cvm.slice`  | CVM on the AHV host                |
+| `ahv-uvms.slice` | User / test VMs                    |
+| `ahv.services`   | Host services under `system.slice` |
+
+
+
+| Field                   | Meaning                               |
+| ----------------------- | ------------------------------------- |
+| `execution_cores`       | Running CPU (cores)                   |
+| `ready_cores`           | Runnable waiting (cores)              |
+| `Demand_s` / `Supply_s` | Wanted vs received CPU time (seconds) |
+
+
+If fewer clones are powered on than created, that is often `clone_buffer`
+headroom — the run continues (INFO, not a failure).
+
+---
+
+## Choose a config
+
+Configs live in `configs/`. Edit or copy a file to change duration, VM names,
+or workload knobs. Setup and Collect follow whatever you pass with `--config`.
+
+
+| Config              | Workload   | VM names                             | interval / collect / runs | Notes                 |
+| ------------------- | ---------- | ------------------------------------ | ------------------------- | --------------------- |
+| `test_quick.json`   | redis      | `redis_base` / `redis_vm_*`          | 10s / 100s / 1            | Short first run       |
+| `redis.json`        | redis      | same                                 | 15s / 600s / 3            | Full redis            |
+| `redis_char.json`   | redis      | same                                 | 5s / 600s / 3             | Finer sample interval |
+| `test.json`         | dirtyHarry | `dirty_harry_base` / `dirty_harry_*` | 30s / 480s / 3            | Own fleet             |
+| `test_fio.json`     | fio        | `fio_base` / `fio_vm_*`              | 5s / 420s / 3             | randread, 8 jobs      |
+| `fio_smallvm.json`  | fio        | `fio_small_*`                        | 5s / 420s / 3             | 3 GB VMs              |
+| `fio_randrw.json`   | fio        | `fio_rw_*`                           | 5s / 420s / 3             | randrw                |
+| `fio_highjobs.json` | fio        | `fio_hj_*`                           | 5s / 420s / 3             | 32 jobs               |
+
+
+`test_quick`, `redis`, and `redis_char` share the same redis fleet. Fio and
+dirtyHarry need their own setup.
+
+### Important fields
+
+
+| Field                           | Meaning                                  |
+| ------------------------------- | ---------------------------------------- |
+| `vm_size_gb`                    | Memory per clone                         |
+| `clone_buffer`                  | Extra clones beyond free-memory estimate |
+| `base_vm_name` / `clone_prefix` | Required names                           |
+| `workload.type`                 | `redis`, `fio`, or `dirtyHarry`          |
+| `interval`                      | Sample interval (seconds)                |
+| `baseline_duration`             | VMs off before power-on                  |
+| `collect_duration`              | Timed measure after workload check       |
+| `num_runs`                      | Default 3                                |
+
+
+Measurement is always `cgroup_cpu_snap` (no collector field in config).
+
+---
+
+## How it works
+
+```text
+orchestrator.py
+  → stages/setup.py      create/clone VMs, install workload,
+                         deploy bin/cgroup_cpu_snap → /root/ on AHV
+  → stages/validate.py   CVM inventory + acli + SSH
+  → stages/collect.py    start cgroup_cpu_snap
+                         baseline → power-on → measure → stop (SIGINT)
+  → stages/present.py    fetch log, tag vms_off/vms_on, terminal + CSV
+```
+
+The collector binary is vendored at `bin/cgroup_cpu_snap` and copied to the host
+at setup/collect time. Rebuild notes: `bin/README.md`.
+
+---
+
+## Layout
+
+```text
+orchestrator.py       # public CLI
+stages/               # setup, validate, collect, present
+bin/cgroup_cpu_snap   # vendored eBPF collector
+configs/              # experiment JSON
+infra/                # CVM / host / VM / SSH helpers
+workloads/            # guest workload installers
+statsDump/            # terminal + CSV
+```
+
+---
+
+## Clearing VMs
+
+On a disposable one-node test cluster only:
 
 ```bash
 acli vm.list
 acli vm.delete * confirm=true
-```
-
-Only do a full `vm.delete *` on a cluster where deleting every VM is acceptable.
-
-### 4. Normal run (example: redis)
-
-```bash
-# Full redis experiment (setup if needed; default 3 runs)
-python3 overhead.py --host <ahv_host> --config sample/redis.json
-```
-
-
-
-### 5. Repeat the same workload later
-
-```bash
-# Clones already exist — experiment only
-python3 overhead.py --host <ahv_host> --config sample/redis.json --skip-setup
-```
-
-Useful flags: `--help`, `--setup-only`, `--runs N`.
-
-Results are written under `results_YYYYMMDD_HHMMSS/` in the directory where you
-ran the command (on the CVM if you followed this guide).
-
----
-
-
-
-## Reading results
-
-
-
-### Output files
-
-
-| File                          | What it is                                          |
-| ----------------------------- | --------------------------------------------------- |
-| Terminal summary (end of run) | Stable averages + top services — start here         |
-| `slices_*_runN.csv`           | One row per tick × slice (main numbers)             |
-| `full_slices_*_runN.csv`      | Same ticks with every metric field                  |
-| `services_*_runN.csv`         | Per host service CPU per tick                       |
-| `events_*_runN.csv`           | Wall-clock markers (collection start, VM on/off, …) |
-| `metadata_*_runN.json`        | Host / AHV / kernel / QEMU info for that run        |
-
-
-Use `Phase == stable` rows for final numbers. Ignore `power_on` / `warmup`
-unless you are debugging boot or ramp-up.
-
-### Phases (how they are decided)
-
-
-| Phase      | When                         | How assigned                                     |
-| ---------- | ---------------------------- | ------------------------------------------------ |
-| `baseline` | Test VMs off                 | From timeline: start → mass power-on             |
-| `power_on` | VMs booting / workload check | From timeline: power-on → collecting starts      |
-| `warmup`   | VMs on, CPU still settling   | After collecting starts, until UVMs look settled |
-| `stable`   | Steady state                 | After UVMs settle; used for the printed summary  |
-
-
-**How long collecting runs** (after VMs are on) is set by **`collect_duration`**
-(seconds), or CLI `--duration N`. That is a fixed sleep. Warmup vs stable
-**labels** are decided afterward from the data; they do not shorten the run.
-
-If `collect_duration` is omitted, the legacy formula is used:
-`max_warmup_duration + (stable_ticks × interval)`.
-
-`stable_ticks` is only used for post-run phase labeling (fallback), not for
-sizing the experiment wait.
-
-Warmup vs stable **labels** are decided **after** the run, from
-`ahv-uvms.slice` `x_cores`:
-
-- Compare each tick to the previous one.
-- If the relative change stays below `warmup_threshold_pct` (default **5%**)
-for `warmup_consecutive` ticks (default **3**), that point becomes the
-start of `stable`.
-- **UVMs settle fast:** short `warmup`, then **all remaining** collecting ticks
-are `stable` (can be more than `stable_ticks`).
-- **UVMs never settle:** fallback — last `stable_ticks` samples → `stable`;
-earlier collecting ticks → `warmup`.
-
-`baseline_duration` is also a fixed sleep (VMs off). Power-on / guest IP /
-workload check time is variable and is labeled `power_on`.
-
-### Slices
-
-
-| Slice            | Meaning                                                     |
-| ---------------- | ----------------------------------------------------------- |
-| `ahv-cvm.slice`  | CVM processes on the AHV host                               |
-| `ahv-uvms.slice` | User / test VMs (guest workload)                            |
-| `ahv.services`   | Host services under `system.slice` (libvirt, networking, …) |
-| `other`          | Tasks not in the three buckets above                        |
-
-
-
-
-### Fields (brief)
-
-Common columns in `slices_*.csv` / terminal:
-
-
-| Field      | Meaning                                             |
-| ---------- | --------------------------------------------------- |
-| `x_cores`  | Running CPU, as cores (main “how much CPU?” number) |
-| `y_cores`  | Runnable but waiting (run-queue), as cores          |
-| `xy_cores` | `x_cores + y_cores`                                 |
-| `Demand_s` | Estimated CPU time wanted in the tick (seconds)     |
-| `Supply_s` | CPU time actually received (seconds)                |
-| `VM_Count` | Powered-on test VMs when the tick was labeled       |
-
-
-In `full_slices_*.csv` (nanoseconds unless noted):
-
-
-| Field                                  | Meaning                                                      |
-| -------------------------------------- | ------------------------------------------------------------ |
-| `X`                                    | Run time in the tick                                         |
-| `Y`                                    | Wait / run-queue time in the tick                            |
-| `Z`                                    | Idle-ish remainder of task time budget in the tick           |
-| `T`                                    | Task-time budget for the tick (`interval × task count`)      |
-| `Supply`                               | Same idea as supply (= `X`)                                  |
-| `Demand`                               | Supply plus an estimate of unmet wait                        |
-| `DemandSupplyRatio`                    | Demand relative to supply (scaled integer %)                 |
-| `tasks_count` / `counted_tids`         | How many tasks were seen                                     |
-| `pct_running_x` / `pct_readyq_y`       | X / Y as % of `T`                                            |
-| `pct_contention`                       | Wait share of (run + wait)                                   |
-| `pct_cpu_util`                         | Run time vs host CPU budget for the interval                 |
-| `fractional` / `fractional_pct_supply` | Wait credited into Demand                                    |
-| `pct_chg_X/Y/Z`                        | % change vs previous tick                                    |
-| `ephemeral_*` / `total_x_cores`        | Short-lived tasks (schedstat path); may be empty for bpfsnap |
-
-
-**Demand vs Supply:** nearly equal → little starvation. Demand much larger →  
-CPU pressure. Cores ≈ `Demand_s / interval` or `Supply_s / interval`.
-
----
-
-## Without the unified CLI
-
-```bash
-python3 setupVms.py     -H <ahv_host> -f sample/redis.json
-python3 overheadTest.py -H <ahv_host> -f sample/redis.json
-```
-
-If not on the CVM, add `-i <cvm_ip>` to both.
-
----
-
-## Configuration
-
-Configs live in `sample/`. Important fields:
-
-
-| Field                                  | Meaning                                                                         |
-| -------------------------------------- | ------------------------------------------------------------------------------- |
-| `vm_size_gb`                           | Memory per clone (affects how many fit)                                         |
-| `clone_buffer`                         | Extra clones beyond the free-memory estimate, used to max out space on the host |
-| `base_vm_name` / `clone_prefix`        | Required names for base + clones                                                |
-| `workload.type`                        | `redis`, `fio`, or `dirtyHarry`                                                 |
-| `interval`                             | Sample interval (seconds)                                                       |
-| `baseline_duration`                    | Time with test VMs off before power-on                                          |
-| `collect_duration`                     | **Total** collect time (seconds) after VMs are on; or use `--duration`          |
-| `stable_ticks` / `max_warmup_duration` | Legacy timing if `collect_duration` omitted; `stable_ticks` still used for labels |
-| `collector`                            | `bpfsnap` (default) or `schedstat`                                              |
-| `num_runs`                             | Default **3**                                                                   |
-
-
-Examples: `sample/test_quick.json`, `sample/redis.json`, `sample/fio_*.json`.
-
----
-
-
-
-## How it works
-
-1. **Setup** — create base VM, download workload binaries from the internal
-  mirror into the guest, enable a systemd service, clone to fill host memory.
-2. **Experiment** — power on clones; run **bpfsnap** on the AHV host using the
-  prebuilt binary at `bpf/prebuilt/schedstat_snap` (shipped in this repo);
-   print a summary and write CSVs under `results_*/`.
-3. If that prebuilt file is missing, the tool tries to compile on the host
-  (usually fails on AHV). Restore the prebuilt binary, or set
-   `"collector": "schedstat"` in the config.
-
----
-
-
-
-## Layout
-
-```
-overhead.py           # preferred CLI
-setupVms.py           # build + clone
-overheadTest.py       # experiment runner
-sample/               # example configs
-workload/             # redis / fio / dirtyHarry (+ mirror URLs)
-statsCollector/       # bpfsnap (+ schedstat fallback)
-statsDump/            # terminal + CSV output
-bpf/prebuilt/         # shipped eBPF collector binary
-util/                 # CVM / host / VM helpers
 ```
 

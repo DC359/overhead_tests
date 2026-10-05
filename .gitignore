@@ -17,5 +17,8 @@ _tmp_*.py
 .rcmd.exp
 .rscp.exp
 
-# Regenerated from the target host's BTF; not needed to run the prebuilt binary
-bpf/vmlinux.h
+# Regenerated host BTF header — not needed to run the vendored binary
+vmlinux.h
+
+# One-off Exp A/B/C backup + rebuild tarball (do not commit)
+.exp_abc_backup/

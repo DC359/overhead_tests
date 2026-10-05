@@ -1,0 +1,17 @@
+{
+    "vm_size_gb": 5,
+    "interval": 30,
+    "baseline_duration": 30,
+    "collect_duration": 480,
+    "num_runs": 3,
+    "clone_buffer": 5,
+    "base_vm_name": "dirty_harry_base",
+    "clone_prefix": "dirty_harry",
+    "workload": {
+        "type": "dirtyHarry",
+        "config": {
+            "n": 2,
+            "m": 4
+        }
+    }
+}

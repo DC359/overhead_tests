@@ -1,18 +1,18 @@
-from libx.objtmpl import StatsDumpTmpl
-from util.host_meta import metadata_csv_comments
+from infra.objtmpl import StatsDumpTmpl
+from infra.host_meta import metadata_csv_comments
 import csv
 import time
 import os
 import json
 
 ALL_SLICE_FIELDS = [
-    "X", "Y", "Z", "T", "tasks_count", "counted_tids",
+    "delta_execution", "delta_ready", "delta_sleep", "T", "tasks_count", "counted_tids",
     "Supply", "Demand", "DemandSupplyRatio",
     "pct_running_x", "pct_readyq_y", "pct_contention", "pct_cpu_util",
-    "x_cores", "y_cores", "xy_cores",
+    "execution_cores", "ready_cores", "execution_ready_cores",
     "fractional", "fractional_pct_supply",
-    "pct_chg_X", "pct_chg_Y", "pct_chg_Z",
-    "ephemeral_x_cores", "ephemeral_y_cores", "ephemeral_count", "total_x_cores",
+    "pct_chg_delta_execution", "pct_chg_delta_ready", "pct_chg_delta_sleep",
+    "ephemeral_execution_cores", "ephemeral_ready_cores", "ephemeral_count", "total_execution_cores",
 ]
 
 
@@ -39,7 +39,7 @@ class csvDump(StatsDumpTmpl):
         host_tag = title.get("host", "")
         host_suffix = "_%s" % host_tag if host_tag else ""
 
-        outdir = "results_%s" % time.strftime("%Y%m%d_%H%M%S")
+        outdir = title.get("outdir") or ("results_%s" % time.strftime("%Y%m%d_%H%M%S"))
         os.makedirs(outdir, exist_ok=True)
 
         meta = title.get("metadata") or {}
@@ -53,23 +53,23 @@ class csvDump(StatsDumpTmpl):
         with open(slices_file, "w") as f:
             w = csv.writer(f)
             _write_meta_comments(w, title)
-            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "Phase", "Slice",
-                         "x_cores", "y_cores", "xy_cores",
-                         "Demand_s", "Supply_s", "total_x_cores"])
+            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "VM_State", "Slice",
+                         "execution_cores", "ready_cores", "execution_ready_cores",
+                         "Demand_s", "Supply_s", "total_execution_cores"])
             for tick in stats:
                 for slice_name, metrics in tick["slices"].items():
                     row = [
                         tick.get("wall_clock", ""),
                         tick["time_delta"],
                         tick.get("vm_count", vm_count),
-                        tick.get("phase", ""),
+                        tick.get("vm_state", ""),
                         slice_name,
-                        metrics.get("x_cores", ""),
-                        metrics.get("y_cores", ""),
-                        metrics.get("xy_cores", ""),
+                        metrics.get("execution_cores", ""),
+                        metrics.get("ready_cores", ""),
+                        metrics.get("execution_ready_cores", ""),
                         ns_to_sec(metrics.get("Demand", 0)),
                         ns_to_sec(metrics.get("Supply", 0)),
-                        metrics.get("total_x_cores", ""),
+                        metrics.get("total_execution_cores", ""),
                     ]
                     w.writerow(row)
         print("Slices CSV saved to %s" % slices_file)
@@ -78,28 +78,28 @@ class csvDump(StatsDumpTmpl):
         with open(services_file, "w") as f:
             w = csv.writer(f)
             _write_meta_comments(w, title)
-            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "Phase", "Service",
-                         "x_cores", "y_cores", "xy_cores", "Demand_s", "Supply_s",
-                         "ephemeral_x_cores", "ephemeral_y_cores", "ephemeral_count",
-                         "total_x_cores", "total_y_cores"])
+            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "VM_State", "Service",
+                         "execution_cores", "ready_cores", "execution_ready_cores", "Demand_s", "Supply_s",
+                         "ephemeral_execution_cores", "ephemeral_ready_cores", "ephemeral_count",
+                         "total_execution_cores", "total_ready_cores"])
             for tick in stats:
                 for svc_name, metrics in tick.get("per_service", {}).items():
                     row = [
                         tick.get("wall_clock", ""),
                         tick["time_delta"],
                         tick.get("vm_count", vm_count),
-                        tick.get("phase", ""),
+                        tick.get("vm_state", ""),
                         svc_name,
-                        metrics.get("x_cores", ""),
-                        metrics.get("y_cores", ""),
-                        metrics.get("xy_cores", ""),
+                        metrics.get("execution_cores", ""),
+                        metrics.get("ready_cores", ""),
+                        metrics.get("execution_ready_cores", ""),
                         ns_to_sec(metrics.get("Demand", 0)),
                         ns_to_sec(metrics.get("Supply", 0)),
-                        metrics.get("ephemeral_x_cores", ""),
-                        metrics.get("ephemeral_y_cores", ""),
+                        metrics.get("ephemeral_execution_cores", ""),
+                        metrics.get("ephemeral_ready_cores", ""),
                         metrics.get("ephemeral_count", ""),
-                        metrics.get("total_x_cores", ""),
-                        metrics.get("total_y_cores", ""),
+                        metrics.get("total_execution_cores", ""),
+                        metrics.get("total_ready_cores", ""),
                     ]
                     w.writerow(row)
         print("Services CSV saved to %s" % services_file)
@@ -108,8 +108,8 @@ class csvDump(StatsDumpTmpl):
         with open(uvms_file, "w") as f:
             w = csv.writer(f)
             _write_meta_comments(w, title)
-            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "Phase", "UVM_UUID",
-                         "x_cores", "y_cores", "xy_cores", "Demand_s", "Supply_s",
+            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "VM_State", "UVM_UUID",
+                         "execution_cores", "ready_cores", "execution_ready_cores", "Demand_s", "Supply_s",
                          "tasks_count"])
             for tick in stats:
                 for uvm_uuid, metrics in tick.get("per_uvm", {}).items():
@@ -117,11 +117,11 @@ class csvDump(StatsDumpTmpl):
                         tick.get("wall_clock", ""),
                         tick["time_delta"],
                         tick.get("vm_count", vm_count),
-                        tick.get("phase", ""),
+                        tick.get("vm_state", ""),
                         uvm_uuid,
-                        metrics.get("x_cores", ""),
-                        metrics.get("y_cores", ""),
-                        metrics.get("xy_cores", ""),
+                        metrics.get("execution_cores", ""),
+                        metrics.get("ready_cores", ""),
+                        metrics.get("execution_ready_cores", ""),
                         ns_to_sec(metrics.get("Demand", 0)),
                         ns_to_sec(metrics.get("Supply", 0)),
                         metrics.get("tasks_count", ""),
@@ -138,7 +138,7 @@ class csvDump(StatsDumpTmpl):
         with open(full_file, "w") as f:
             w = csv.writer(f)
             _write_meta_comments(w, title)
-            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "Phase", "Slice"] + ALL_SLICE_FIELDS + ["Event"])
+            w.writerow(["Wall_Clock", "Elapsed", "VM_Count", "VM_State", "Slice"] + ALL_SLICE_FIELDS + ["Event"])
             emitted_events = set()
             for tick in stats:
                 wc = tick.get("wall_clock", "")
@@ -153,7 +153,7 @@ class csvDump(StatsDumpTmpl):
                         wc,
                         tick["time_delta"],
                         tick.get("vm_count", vm_count),
-                        tick.get("phase", ""),
+                        tick.get("vm_state", ""),
                         slice_name,
                     ]
                     for field in ALL_SLICE_FIELDS:
@@ -180,7 +180,7 @@ class csvDump(StatsDumpTmpl):
             bpf_exits_file = os.path.join(outdir, "bpf_exits%s_run%d.csv" % (host_suffix, run_num))
             with open(bpf_exits_file, "w") as f:
                 w = csv.writer(f)
-                w.writerow(["Tick", "Wall_Clock", "Phase", "PID", "Comm",
+                w.writerow(["Tick", "Wall_Clock", "VM_State", "PID", "Comm",
                              "Service", "Run_ns", "Wait_ns"])
                 for tick in stats:
                     churn = tick.get("churn", {})
@@ -188,7 +188,7 @@ class csvDump(StatsDumpTmpl):
                         w.writerow([
                             tick.get("tick", ""),
                             tick.get("wall_clock", ""),
-                            tick.get("phase", ""),
+                            tick.get("vm_state", ""),
                             info.get("pid", ""),
                             info.get("comm", ""),
                             info.get("cgroup", ""),
@@ -203,7 +203,7 @@ class csvDump(StatsDumpTmpl):
             with open(merged_file, "w") as f:
                 w = csv.writer(f)
                 w.writerow([
-                    "Tick", "Wall_Clock", "Wall_Clock_End", "Phase",
+                    "Tick", "Wall_Clock", "Wall_Clock_End", "VM_State",
                     "Service",
                     "cpu.stat_ns", "schedstat_ns", "bpf_eph_ns", "total_ns",
                     "Diff_pct", "TotalDiff_pct",
@@ -223,7 +223,7 @@ class csvDump(StatsDumpTmpl):
                         diff_pct = round((sched - cpustat) * 100.0 / cpustat, 1) if cpustat > 0 else 0.0
 
                         svc_metrics = tick.get("per_service", {}).get(svc, {})
-                        eph_xc = svc_metrics.get("ephemeral_x_cores", 0) or 0
+                        eph_xc = svc_metrics.get("ephemeral_execution_cores", 0) or 0
                         tick_delta = tick.get("tick_delta_s", 5)
                         if tick_delta <= 0:
                             tick_delta = 5
@@ -235,7 +235,7 @@ class csvDump(StatsDumpTmpl):
                             tick.get("tick", ""),
                             tick.get("wall_clock", ""),
                             tick.get("wall_clock_end", ""),
-                            tick.get("phase", ""),
+                            tick.get("vm_state", ""),
                             svc,
                             cpustat, sched, eph_ns, total_ns,
                             diff_pct, total_diff_pct,
