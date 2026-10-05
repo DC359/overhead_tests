@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Power on, sample with cgroup_cpu_snap, power off
 """Collect stage — VERSION 0.1.0
 
 Drive cgroup_cpu_snap with its native CLI. Optional --host-verify side tools.
