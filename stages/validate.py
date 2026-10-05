@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# CVM/AHV connectivity and host metadata
 """Validate stage — VERSION 0.1.0 (connectivity + optional metadata)."""
 
 VERSION = "0.1.0"
