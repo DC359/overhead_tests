@@ -1,3 +1,4 @@
+# Kernel, QEMU, libvirt metadata
 """
 Collect AHV host / hypervisor metadata for run headers and CSV comments.
 Best-effort: missing fields become empty strings, never fail the experiment.
