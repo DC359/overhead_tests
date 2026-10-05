@@ -1,3 +1,4 @@
+# CVM inventory, clone, and power control
 from infra.ssh import *
 from infra.vm import *
 from infra.host import *
