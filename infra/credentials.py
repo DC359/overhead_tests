@@ -1,3 +1,4 @@
+# Guest VM password for setup SSH
 """
 Credential helpers for overhead-tests.
 
