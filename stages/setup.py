@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Create base VM, install workload, clone, deploy collector
 """Setup stage — VERSION 0.1.0
 
 Create base VM, install workload, clone fleet, deploy cgroup_cpu_snap to AHV.
