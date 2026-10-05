@@ -1,3 +1,4 @@
+# Write results CSVs
 from infra.objtmpl import StatsDumpTmpl
 from infra.host_meta import metadata_csv_comments
 import csv
