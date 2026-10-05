@@ -1,4 +1,5 @@
-# Prebuilt collector
+# Host CPU collector binary
+
 
 `cgroup_cpu_snap` — vendored from bpf-collector (`bpf/prebuilt/cgroup_cpu_snap`), version **0.1.0**.
 
